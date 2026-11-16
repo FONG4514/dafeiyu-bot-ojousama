@@ -57,9 +57,9 @@ public enum QQPersonality: String, Codable, CaseIterable, Sendable {
     }
 }
 
+/// Recognised only so disabled persona commands never reach the model.
 public enum QQPersonaCommand: Equatable, Sendable {
     case status, list, reset, set(QQPersonality), invalid
-    public static let navigation = "【操作 · 不调用模型】\n• /persona → 当前性格\n• /persona list → 全部性格\n• /persona 贴吧 → 按名称切换本会话\n• /persona default → 恢复默认"
     public static func parse(_ text: String) -> Self? {
         let value = text.trimmingCharacters(in: .whitespacesAndNewlines)
         guard let range = value.range(of: #"^/(persona|性格)(?=$|\s|[\x{3400}-\x{9fff}])"#, options: [.regularExpression, .caseInsensitive]) else { return nil }
@@ -70,20 +70,6 @@ public enum QQPersonaCommand: Equatable, Sendable {
         case "list", "help", "列表", "帮助", "?": return .list
         case "default", "reset", "默认", "恢复默认": return .reset
         default: return QQPersonality.resolve(argument).map(Self.set) ?? .invalid
-        }
-    }
-    public func response(style: QQPersonality, inherited: Bool) -> String {
-        let current = "当前性格：\(style.name)（\(inherited ? "跟随默认" : "本会话独立")）"
-        switch self {
-        case .set: return "【切换成功】\n" + current + "\n\n• /persona list → 选择其他性格\n• /persona default → 恢复默认"
-        case .reset: return "【已恢复默认】\n" + current + "\n\n• /persona list → 选择独立性格"
-        case .list:
-            let rows = QQPersonality.allCases.enumerated().map { index, item in
-                "\(String(format: "%02d", index + 1))｜\(item.name)\n    \(item.description)"
-            }
-            return "【性格列表】\n" + current + "\n────────\n" + rows.joined(separator: "\n\n") + "\n────────\n" + Self.navigation
-        case .status: return "【当前性格】\n" + current + "\n特点：" + style.description + "\n────────\n" + Self.navigation
-        case .invalid: return "【未识别性格】\n设置未改变，请按名称选择。\n\n• /persona list → 查看全部名称\n• /persona 猫娘 → 切换示例"
         }
     }
 }

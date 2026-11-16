@@ -67,13 +67,101 @@ private final class PersonalityModelProtocol: URLProtocol, @unchecked Sendable {
         #expect(latest.config.persona(for: "group:99999").effectiveStyle == .butler)
         #expect(latest.memoryBooks["12345:private:54321"] == book)
     }
-    @Test(arguments: ["teasing", "gentle", "tsundere", "energetic", "calm", "butler", "catgirl", "tieba", "abstract", "drama", "custom", "customMissing", "proactive", "private", "owner", "reset", "invalid", "list", "quoted", "atOther", "foreign", "disabled", "paused", "duplicate", "unknown", "pauseQueue", "noParticipation", "order"])
-    func commandIsolationAndReplyPipeline(_ mode: String) async throws {
+    @Test func removingOrRenumberingBindingClearsOnlyItsSharedMemory() throws {
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let bound = QQSenderPersona(number: "54321", style: .gentle)
+        let seed = QQEngine(allowAuthenticationUI: false, storageDirectory: directory)
+        seed.config.expectedSelfID = "12345"; seed.config.senderPersonas = [bound]
+        seed.save()
+        let file = directory.appendingPathComponent("qq-state.json")
+        var raw = try #require(JSONSerialization.jsonObject(with: Data(contentsOf: file)) as? [String: Any])
+        var book = QQMemoryBook()
+        book.append(QQMemoryEvent(id: "1", subject: "PEER", text: "synthetic preference blue", at: Date()))
+        let shared = "12345:persona:" + bound.id.uuidString
+        raw["memoryBooks"] = try JSONSerialization.jsonObject(with: JSONEncoder().encode([shared: book, "12345:private:77777": book]))
+        try JSONSerialization.data(withJSONObject: raw).write(to: file)
+        let engine = QQEngine(allowAuthenticationUI: false, storageDirectory: directory)
+        engine.saveReplySettings(ai: engine.config.ai, persona: engine.config.effectivePersona, senderPersonas: [bound])
+        #expect(engine.error == nil); #expect(engine.memoryBooks[shared] == book)
+        var renumbered = bound; renumbered.number = "66666"
+        engine.saveReplySettings(ai: engine.config.ai, persona: engine.config.effectivePersona, senderPersonas: [renumbered])
+        #expect(engine.error == nil); #expect(engine.memoryBooks[shared] == nil)
+        #expect(engine.memoryBooks["12345:private:77777"] == book)
+        let restored = QQEngine(allowAuthenticationUI: false, storageDirectory: directory)
+        #expect(restored.config.effectiveSenderPersonas == [renumbered])
+        #expect(restored.memoryBooks[shared] == nil); #expect(restored.memoryBooks["12345:private:77777"] == book)
+    }
+    @Test(arguments: ["group", "private", "owner"])
+    func personaCommandsAreDisabled(_ mode: String) async throws {
+        try await withFixture(configure: { $0.config.effectiveMemoryEnabled = true }) { engine, directory in
+            var command = Self.event(1, "/persona gentle", group: mode == "private" ? nil : "99999", mention: mode == "group")
+            if mode == "owner" { command["post_type"] = "message_sent"; command["user_id"] = 12345; command["sender"] = ["user_id": 12345] }
+            try writePrivateData(JSONSerialization.data(withJSONObject: [command]), to: directory.appendingPathComponent("event-batch"))
+            try await Self.wait(seconds: 5) { engine.logs.contains { $0.detail.contains("性格命令已停用") } }
+            try await Task.sleep(nanoseconds: 300_000_000)
+            #expect(engine.logs.contains { $0.detail.contains("性格命令已停用") })
+            #expect(engine.sends.attempts == 0); #expect(engine.usage.calls == 0)
+            #expect(PersonalityModelProtocol.captured.isEmpty); #expect(engine.memoryBooks.isEmpty)
+            #expect(engine.config.persona(for: mode == "private" ? "private:54321" : "group:99999").effectiveStyle == .teasing)
+        }
+    }
+    @Test(arguments: QQPersonality.allCases.map(\.rawValue) + ["proactive", "memory"])
+    func senderPersonaRoutesRepliesAndMemory(_ mode: String) async throws {
+        let style = QQPersonality(rawValue: mode) ?? .gentle
+        var bound = QQSenderPersona(number: "54321", style: style)
+        bound.names = ["合成甲"]
+        if style == .custom { bound.customName = "合成角色"; bound.customPrompt = "SYNTHETIC_BOUND_STYLE：自然简短的游戏搭子。" }
+        try await withFixture(configure: { engine in
+            engine.config.senderPersonas = [bound]
+            engine.config.effectiveMemoryEnabled = mode == "memory"
+            engine.config.effectiveGroupParticipationEvery = mode == "proactive" ? 1 : 10
+        }) { engine, directory in
+            // The bound user speaks in one group; an unbound member speaks in another.
+            let batch = [Self.event(2, "今天聊天测试", mention: mode != "proactive"), Self.event(3, "另一个群测试，合成甲在吗", sender: 66666, group: "88888", mention: true)]
+            try writePrivateData(JSONSerialization.data(withJSONObject: batch), to: directory.appendingPathComponent("event-batch"))
+            try await Self.wait(seconds: 9) { engine.sends.confirmed >= 2 || engine.sends.uncertain > 0 }
+            #expect(engine.sends.confirmed == 2); #expect(engine.sends.uncertain == 0)
+            let prompts = PersonalityModelProtocol.captured
+            #expect(prompts.count == 4)
+            #expect(prompts.prefix(2).allSatisfy { $0.contains("当前会话唯一生效性格：" + style.name) })
+            #expect(prompts.suffix(2).allSatisfy { $0.contains("当前会话唯一生效性格：" + QQPersonality.teasing.name) })
+            if style == .custom {
+                #expect(prompts.prefix(2).allSatisfy { $0.contains("SYNTHETIC_BOUND_STYLE") })
+                #expect(prompts.suffix(2).allSatisfy { !$0.contains("SYNTHETIC_BOUND_STYLE") })
+            }
+            #expect(prompts.suffix(2).allSatisfy { $0.contains("你认识的熟人") && $0.contains("常用称呼：合成甲") && $0.contains("[MEMBER_") })
+            #expect(prompts.prefix(2).allSatisfy { !$0.contains("你认识的熟人") })
+            if mode == "proactive" { #expect(prompts.first?.contains("[QQ_PARTICIPATION]") == true) }
+            if mode == "memory" {
+                let shared = try #require(engine.memoryBooks["12345:persona:" + bound.id.uuidString])
+                #expect(shared.recent.contains { $0.id == "2" && $0.subject == "PEER" })
+                #expect(engine.memoryBooks["12345:group:99999"] == nil)
+                let other = try #require(engine.memoryBooks["12345:group:88888"])
+                #expect(other.recent.contains { $0.id == "3" && $0.subject.hasPrefix("MEMBER_") })
+                #expect(!other.recent.contains { $0.id == "2" })
+                #expect(shared.recent.contains { $0.id == "3" && $0.subject.hasPrefix("MENTION_") && $0.text.hasPrefix("（此句提到 PEER）") })
+                #expect(prompts.allSatisfy { $0.contains("不透露别人说过什么") })
+            }
+        }
+    }
+    private static func event(_ id: Int, _ text: String, sender: Int = 54321, group: String? = "99999", mention: Bool = false) -> [String: Any] {
+        var parts: [[String: Any]] = [["type": "text", "data": ["text": text]]]
+        if mention { parts.insert(["type": "at", "data": ["qq": "12345"]], at: 0) }
+        var row: [String: Any] = ["post_type": "message", "self_id": 12345, "user_id": sender, "sender": ["user_id": sender], "message_id": id, "message_type": group == nil ? "private" : "group", "sub_type": group == nil ? "friend" : "normal", "message": parts]
+        if let group { row["group_id"] = Int(group)! }
+        return row
+    }
+    private static func wait(seconds: Double, until done: () -> Bool) async throws {
+        let until = Date().addingTimeInterval(seconds)
+        while Date() < until, !done() { try await Task.sleep(nanoseconds: 20_000_000) }
+    }
+    private func withFixture(configure: (QQEngine) -> Void, _ body: (QQEngine, URL) async throws -> Void) async throws {
         let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
         defer { try? FileManager.default.removeItem(at: directory) }
         try Data("groupParticipation".utf8).write(to: directory.appendingPathComponent("message-shape"))
-        if mode == "unknown" { try Data().write(to: directory.appendingPathComponent("drop-send")) }
         let server = Process(), output = Pipe()
         server.executableURL = URL(fileURLWithPath: ProcessInfo.processInfo.environment["DAFEIYU_PYTHON"] ?? "/usr/bin/python3")
         server.arguments = [URL(fileURLWithPath: #filePath).deletingLastPathComponent().appendingPathComponent("onebot_fixture.py").path, directory.path]
@@ -86,81 +174,16 @@ private final class PersonalityModelProtocol: URLProtocol, @unchecked Sendable {
         let engine = QQEngine(allowAuthenticationUI: false, storageDirectory: directory, modelClient: DeepSeekClient(session: session))
         defer { engine.disconnect() }
         engine.config.endpoint = "ws://127.0.0.1:\(port)"; engine.config.expectedSelfID = "12345"
-        if mode == "custom" { engine.config.effectivePersona.customName = "合成角色"; engine.config.effectivePersona.customPrompt = "SYNTHETIC_CUSTOM_STYLE：自然简短的游戏搭子。" }
         engine.config.effectivePersona.stickersEnabled = false; engine.config.effectiveArtwork.enabled = false
         engine.config.effectiveImageGeneration.enabled = false; engine.config.effectiveOnlineEnabled = false
         engine.config.ai.cooldownSeconds = 1; engine.config.ai.effectiveSendLimits.globalIntervalSeconds = 1
-        engine.config.effectiveMemoryEnabled = true
-        engine.config.effectiveGroupParticipationEnabled = mode != "noParticipation"; engine.config.effectiveGroupParticipationEvery = mode == "proactive" ? 1 : 10
+        engine.config.effectiveGroupParticipationEnabled = true
+        configure(engine)
         #expect(engine.useTemporaryCredentials(token: "synthetic-test-token", key: "synthetic-key"))
         await engine.connect(); try #require(engine.connected, "\(engine.error ?? engine.status)")
         for contact in engine.contacts { engine.add(contact) }
         for index in engine.config.targets.indices { engine.config.targets[index].enabled = true }
-        let key = mode == "private" ? "private:54321" : "group:99999"
-        if mode == "reset" { engine.setPersonaStyle("gentle", target: key) }
-        if mode == "disabled" { engine.config.targets[engine.config.targets.firstIndex { $0.key == key }!].enabled = false }
-        let pipeline = QQPersonality(rawValue: mode) != nil || ["proactive", "order"].contains(mode)
-        if pipeline { engine.config.effectiveMemoryEnabled = false }
-        engine.start()
-        if mode == "paused" { engine.pause() }
-        let style = mode == "customMissing" ? QQPersonality.custom : QQPersonality(rawValue: mode) ?? .gentle
-        let command = mode == "reset" ? "/persona default" : mode == "invalid" ? "/persona nonexistent" : mode == "list" ? "/persona list" : "/persona " + style.rawValue
-        func event(_ id: Int, _ text: String, group: String? = "99999", mention: Bool = false) -> [String: Any] {
-            var parts: [[String: Any]] = [["type": "text", "data": ["text": text]]]
-            if mention { parts.insert(["type": "at", "data": ["qq": "12345"]], at: 0) }
-            var row: [String: Any] = ["post_type": "message", "self_id": 12345, "user_id": 54321, "sender": ["user_id": 54321], "message_id": id, "message_type": group == nil ? "private" : "group", "sub_type": group == nil ? "friend" : "normal", "message": parts]
-            if let group { row["group_id"] = Int(group)! }
-            return row
-        }
-        var first = event(1, command, group: mode == "private" ? nil : mode == "foreign" ? "77777" : "99999")
-        if mode == "owner" { first["post_type"] = "message_sent"; first["user_id"] = 12345; first["sender"] = ["user_id": 12345] }
-        if mode == "quoted" || mode == "atOther" {
-            var parts = first["message"] as! [[String: Any]]
-            parts.append(mode == "quoted" ? ["type": "reply", "data": ["id": "-12"]] : ["type": "at", "data": ["qq": "77777"]]); first["message"] = parts
-        }
-        var batch = [first]
-        if pipeline { batch += [event(2, "今天聊天测试", mention: mode != "proactive"), event(3, "另一个群测试", group: "88888", mention: true)] }
-        if mode == "order" { batch = [event(2, "先按原性格回复", mention: true), first, event(3, "切换后的回复", mention: true)] }
-        if mode == "duplicate" { batch.append(first) }
-        if mode == "pauseQueue" { batch.append(event(2, "/persona calm")) }
-        try writePrivateData(JSONSerialization.data(withJSONObject: batch), to: directory.appendingPathComponent("event-batch"))
-        let rejected = ["foreign", "disabled", "paused", "quoted", "atOther"].contains(mode)
-        let until = Date().addingTimeInterval(rejected ? 0.5 : 9)
-        while Date() < until {
-            if engine.sends.confirmed >= (pipeline ? 3 : 1) || engine.sends.uncertain > 0 { break }
-            try await Task.sleep(nanoseconds: 20_000_000)
-        }
-        if mode == "pauseQueue" { engine.pause(); try await Task.sleep(nanoseconds: 200_000_000) }
-        if rejected {
-            #expect(engine.sends.attempts == 0); #expect(engine.config.persona(for: key).effectiveStyle == .teasing)
-        } else {
-            #expect(engine.config.persona(for: key).effectiveStyle == (["reset", "invalid", "list", "customMissing"].contains(mode) ? .teasing : style))
-            if mode == "unknown" { #expect(!engine.running); #expect(engine.sends.uncertain == 1) }
-            else { #expect(engine.sends.confirmed == (pipeline ? 3 : 1)); #expect(engine.sends.uncertain == 0) }
-        }
-        #expect(engine.config.persona(for: "group:88888").effectiveStyle == .teasing)
-        if mode != "private" { #expect(engine.config.persona(for: "private:54321").effectiveStyle == .teasing) }
-        if pipeline {
-            #expect(PersonalityModelProtocol.captured.count == 4)
-            if mode == "custom" {
-                #expect(PersonalityModelProtocol.captured.prefix(2).allSatisfy { $0.contains("SYNTHETIC_CUSTOM_STYLE") })
-                #expect(PersonalityModelProtocol.captured.suffix(2).allSatisfy { !$0.contains("SYNTHETIC_CUSTOM_STYLE") })
-            }
-            #expect(PersonalityModelProtocol.captured.prefix(2).allSatisfy { $0.contains("当前会话唯一生效性格：" + (mode == "order" ? QQPersonality.teasing.name : style.name)) })
-            #expect(PersonalityModelProtocol.captured.suffix(2).allSatisfy { $0.contains("当前会话唯一生效性格：" + (mode == "order" ? style.name : QQPersonality.teasing.name)) })
-            #expect(PersonalityModelProtocol.captured.contains { $0.contains("发送前的语义校对") })
-        } else {
-            #expect(engine.usage.calls == 0); #expect(PersonalityModelProtocol.captured.isEmpty)
-            #expect(engine.memoryBooks.isEmpty); #expect(engine.groupMessageCounts.values.allSatisfy { $0 == 0 })
-        }
-        if !rejected && mode != "unknown" {
-            let payload = try #require(String(data: Data(contentsOf: directory.appendingPathComponent("payloads")), encoding: .utf8))
-            #expect(payload.contains("/persona"))
-        }
-        let expected = engine.config.persona(for: key).effectiveStyle
-        engine.disconnect()
-        let restored = QQEngine(allowAuthenticationUI: false, storageDirectory: directory)
-        #expect(restored.config.persona(for: key).effectiveStyle == expected)
-        #expect(!restored.running)
+        engine.start(); try #require(engine.running, "\(engine.error ?? engine.status)")
+        try await body(engine, directory)
     }
 }

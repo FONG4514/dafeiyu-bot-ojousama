@@ -215,18 +215,19 @@ import BotCore
                     var updated = engine.config
                     if let ai = request.ai { updated.ai = ai }
                     if let persona = request.persona { updated.persona = persona }
+                    if let senderPersonas = request.senderPersonas { updated.senderPersonas = senderPersonas }
                     if let onlineEnabled = request.onlineEnabled { updated.onlineEnabled = onlineEnabled }
                     if let visionEnabled = request.visionEnabled { updated.visionEnabled = visionEnabled }
                     if let memoryEnabled = request.memoryEnabled { updated.memoryEnabled = memoryEnabled }
                     if let options = request.memoryOptions { updated.memoryOptions = options }
                     if let value = request.groupParticipationEnabled { updated.groupParticipationEnabled = value }
                     if let value = request.groupParticipationEvery { updated.groupParticipationEvery = value }
-                    try updated.validate(); engine.saveReplySettings(ai: updated.ai, persona: updated.effectivePersona, onlineEnabled: updated.effectiveOnlineEnabled, visionEnabled: updated.effectiveVisionEnabled, memoryEnabled: updated.effectiveMemoryEnabled, groupParticipationEnabled: updated.effectiveGroupParticipationEnabled, groupParticipationEvery: updated.effectiveGroupParticipationEvery, memoryOptions: updated.effectiveMemoryOptions, enabledTargets: request.enabled.map { Set($0) })
+                    try updated.validate(); engine.saveReplySettings(ai: updated.ai, persona: updated.effectivePersona, onlineEnabled: updated.effectiveOnlineEnabled, visionEnabled: updated.effectiveVisionEnabled, memoryEnabled: updated.effectiveMemoryEnabled, groupParticipationEnabled: updated.effectiveGroupParticipationEnabled, groupParticipationEvery: updated.effectiveGroupParticipationEvery, memoryOptions: updated.effectiveMemoryOptions, enabledTargets: request.enabled.map { Set($0) }, senderPersonas: request.senderPersonas)
                 case "start":
                     guard engine.connected, !engine.running, !engine.busy, !engine.runtimeBusy else { throw AppFailure.message("请先连接或暂停") }
                     let duration = request.singleReply == true ? 15 : (request.durationMinutes ?? 120)
                     guard (0...4320).contains(duration) else { throw AppFailure.message("运行时长必须为 0 至 4320 分钟") }
-                    guard request.ai == nil, request.persona == nil, request.enabled == nil,
+                    guard request.ai == nil, request.persona == nil, request.senderPersonas == nil, request.enabled == nil,
                           request.onlineEnabled == nil, request.visionEnabled == nil, request.memoryEnabled == nil,
                           request.memoryOptions == nil, request.groupParticipationEnabled == nil, request.groupParticipationEvery == nil else {
                         throw AppFailure.message("开始回复只使用已保存配置，请先单独保存范围与回复设置")
@@ -238,6 +239,10 @@ import BotCore
         } else if !(method == "GET" && path == "/api/status") { reply(connection, id: id, code: 404); return }
         do {
             let config = try JSONSerialization.jsonObject(with: JSONEncoder().encode(engine.config))
+            func memoryLabel(_ key: String) -> String {
+                guard let bound = engine.config.effectiveSenderPersonas.first(where: { engine.config.memoryScope($0) == key }) else { return key }
+                return "指定 QQ \(bound.number) 的人设（跨会话共享）"
+            }
             let object: [String: Any] = ["runtime": ["module": "qq", "version": QQRuntimeRegistration.version, "generation": generation, "pid": ProcessInfo.processInfo.processIdentifier], "config": config, "configurationSaved": configurationSaved, "configurationRevision": currentConfigurationRevision(), "connected": engine.connected, "running": engine.running,
                 "busy": engine.busy || engine.runtimeBusy, "status": engine.status, "error": engine.error ?? "",
                 "temporaryCredentials": engine.usesTemporaryCredentials,
@@ -257,7 +262,7 @@ import BotCore
                 "memoryOptions": try JSONSerialization.jsonObject(with: JSONEncoder().encode(engine.config.effectiveMemoryOptions)),
                 "memoryStatus": engine.memoryStatus, "memoryBusy": engine.memoryBusy,
                 "memories": engine.memoryBooks.filter { $0.key.hasPrefix(engine.config.expectedSelfID + ":") }.sorted { $0.key < $1.key }.map { key, book in
-                    ["key": key, "summary": book.items.filter { $0.current(Date()) }.suffix(32).map { "[\($0.subject)·\($0.kind)] \($0.text)" }.joined(separator: "\n"), "updatedAt": (book.lastCompactedAt ?? book.recent.last?.at ?? Date.distantPast).timeIntervalSince1970, "pending": book.pending.count, "items": book.items.filter { $0.current(Date()) }.count, "dropped": book.droppedEvents] as [String: Any]
+                    ["key": memoryLabel(key), "summary": book.items.filter { $0.current(Date()) }.suffix(32).map { "[\($0.subject)·\($0.kind)] \($0.text)" }.joined(separator: "\n"), "updatedAt": (book.lastCompactedAt ?? book.recent.last?.at ?? Date.distantPast).timeIntervalSince1970, "pending": book.pending.count, "items": book.items.filter { $0.current(Date()) }.count, "dropped": book.droppedEvents] as [String: Any]
                 },
                 "personalities": QQPersonality.allCases.map { ["id": $0.rawValue, "name": $0.name, "description": $0.description] },
                 "persona": try JSONSerialization.jsonObject(with: JSONEncoder().encode(engine.config.effectivePersona)),
@@ -304,6 +309,7 @@ import BotCore
         var enabled: [String]?
         var ai: BotConfig?
         var persona: QQPersona?
+        var senderPersonas: [QQSenderPersona]?
         var personaStyle: String?
         var onlineEnabled: Bool?
         var visionEnabled: Bool?

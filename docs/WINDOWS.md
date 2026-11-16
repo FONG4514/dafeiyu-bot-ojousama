@@ -138,7 +138,7 @@ wsl -d Ubuntu-24.04 -- bash -lc 'cd ~/dafeiyu-bot && exec bash scripts/start-lin
 
 ### 6. 日常操作、停止和升级
 
-- `/help` 查看命令；`/hot`、`/search 关键词`、`/next`、画师和性格命令见 [全部命令](COMMANDS.md)。命令分发不调用大模型；普通对话和主动接话会消耗模型额度。
+- `/help` 查看命令；`/hot`、`/search 关键词`、`/next` 等命令见 [全部命令](COMMANDS.md)。命令分发不调用大模型；普通对话和主动接话会消耗模型额度。
 - 生图、外置识图和 Google 搜图在同一个面板配置；账户开通条件和费用见 [操作指南](USER_GUIDE.md)。没有配置的可选服务保持关闭。
 - 群主动接话按每 N 条**评估**是否加入，可以沉默；真实 @ 不重置累计计数。
 - 先在面板暂停，再在运行终端 Ctrl+C。需要退出 QQ 桥接时运行 `sudo docker stop qq-ai`。

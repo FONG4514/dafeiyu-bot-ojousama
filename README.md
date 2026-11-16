@@ -4,6 +4,8 @@
 
 给 QQ 配一个有性格、有记忆的 AI 伙伴。支持 Windows 本机客户端、Mac 原生客户端，以及 MCP 工具接入。
 
+> 本仓库 [FONG4514/dafeiyu-bot-ojousama](https://github.com/FONG4514/dafeiyu-bot-ojousama) fork 自 [SAKURAfan1023/dafeiyu-bot](https://github.com/SAKURAfan1023/dafeiyu-bot)，原作者 SAKURAfan1023。本版本的改动见[本版本改动说明](#本版本改动说明)。
+
 [快速上手](#快速上手) · [npm 使用](#npm-快速使用) · [MCP 接入](#mcp-接入) · [下载页](https://github.com/SAKURAfan1023/dafeiyu-bot/releases/tag/v0.3.0-preview.3) · [界面预览](docs/SCREENSHOTS.md) · [问题反馈](https://github.com/SAKURAfan1023/dafeiyu-bot/issues)
 
 另有独立的[五款可动少女与 Avatar MCP](docs/AVATAR_MODELS.md)，提供角色切换、表情、头部与肩肘腕细调，以及可选的本地流式少女声、口型同步和组合表演。独立使用：`npx --yes @sakurafan1023/avatar@0.2.0 preview`；[安装与语音配置](packages/avatar/README.md)。
@@ -128,6 +130,21 @@ MCP 提供状态、联系人、连接设置、回复范围、运行控制、工�
 预览图为本机合成数据界面，不代表真实 QQ、Windows 或社交平台验收。
 
 </details>
+
+## 本版本改动说明
+
+相对上游 [SAKURAfan1023/dafeiyu-bot](https://github.com/SAKURAfan1023/dafeiyu-bot)：
+
+- **指定 QQ 人设**：最多 3 个指定 QQ 号各用一套人设（预设或自定义），其他人统一使用默认人设。消息进入模型前先按发言人 QQ 号分流，私聊和群聊都生效；群主动接话使用触发者的人设。
+- **指定 QQ 共用一份记忆**：同一指定 QQ 的私聊、群里 @ 回复、群主动接话共用一份长期记忆；其他人仍按会话隔离。删除或改号会清除对应记忆。
+- **提到即记住**：任何会话里 @ 到指定 QQ，或提到为他配置的 QQ 名称/群昵称（例如 A 提到 B、其他人提到 A 或 B），这句话会以说话人的固定匿名标记记入被提到者的记忆，作为转述而非本人事实；回复时只作理解背景。
+- **认得被提到的人**：有人 @ 指定 QQ 或提到他的名称时，回复会被告知这是机器人认识的熟人及其常用称呼，避免表现得不认识；即使不开长期记忆也生效。
+- **名称识别可选**：每个指定 QQ 可填写最多 5 个 QQ 名称/群昵称，用于识别“提到了他”和称呼他；分流仍只认 QQ 号，改群昵称不能冒充指定人设。
+- **不透露记忆**：提示词要求模型不复述记忆条目，不透露别人说过什么、其他会话内容或个人信息，被追问时不确认也不否认。
+- **`/persona` 停用**：聊天内不再能切换人设，只能在网页控制面板的“指定 QQ 人设”中修改。
+- **检索方式**：长期记忆仍用本地关键词检索，未引入向量数据库。
+
+以上改动只经过合成身份与本机夹具测试，未在真实 QQ 会话中验收；Mac 原生面板暂不能编辑指定 QQ 人设。
 
 ## 反馈与许可
 

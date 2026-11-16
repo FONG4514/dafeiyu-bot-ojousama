@@ -70,7 +70,7 @@ public struct QQMemoryDelta: Decodable, Sendable {
     }
 }
 
-/// One account + one private peer/group. Pending excerpts survive pause; no cross-scope search.
+/// One account + one private peer/group, or one bound user's persona. Pending excerpts survive pause; no cross-scope search.
 public struct QQMemoryBook: Codable, Equatable, Sendable {
     public private(set) var pending: [QQMemoryEvent] = []
     public private(set) var recent: [QQMemoryEvent] = []
@@ -84,6 +84,12 @@ public struct QQMemoryBook: Codable, Equatable, Sendable {
         if target.hasPrefix("private:") { return "PEER" }
         let digest = SHA256.hash(data: Data((account + ":" + target + ":" + sender).utf8))
         return "MEMBER_" + digest.prefix(6).map { String(format: "%02x", $0) }.joined()
+    }
+    /// Stable across chats so a bound user's book keeps each person who mentions them apart.
+    public static func mentioner(account: String, sender: String) -> String {
+        if sender == account { return "OWNER" }
+        let digest = SHA256.hash(data: Data((account + ":mention:" + sender).utf8))
+        return "MENTION_" + digest.prefix(6).map { String(format: "%02x", $0) }.joined()
     }
     public static func redact(_ text: String) -> String {
         text.replacingOccurrences(of: #"(?i)(sk-[a-z0-9_-]+|cfut_[a-z0-9_-]+|bearer\s+[a-z0-9._-]+|(?:密码|口令|密钥|token|api.?key)\s*[:：=]\s*[^\s，。；;]+|https?://[^\s]+[?][^\s]+)"#, with: "[敏感信息省略]", options: .regularExpression)
@@ -200,13 +206,14 @@ public struct QQMemoryIndex: Sendable {
             return (item, score + Double(item.importance) * 0.15 + freshness * 0.3 + (item.subject == subject ? 0.5 : 0))
         }.sorted { $0.1 == $1.1 ? $0.0.id < $1.0.id : $0.1 > $1.1 }.prefix(limit).map(\.0)
     }
-    public func context(_ query: String, subject: String, characters: Int, now: Date = Date()) -> String {
+    /// `label` renames the queried subject for display, e.g. a shared PEER shown as the current group member.
+    public func context(_ query: String, subject: String, characters: Int, now: Date = Date(), label: String? = nil) -> String {
         let historical = ["以前", "过去", "之前", "曾经", "改前"].contains { query.contains($0) }
         let formatter = ISO8601DateFormatter(); formatter.formatOptions = [.withFullDate]
         var lines: [String] = [], count = 0
         for item in search(query, subject: subject, now: now, history: historical) {
             let state = !item.current(now) ? "历史/已失效，不能当作现在" : item.kind == "legacy" ? "旧摘要/未经逐条核验" : item.kind == "episode" ? "历史片段/当时状态" : "已记录"
-            let line = "[\(item.subject)·\(item.kind)·\(formatter.string(from: item.updatedAt))·\(state)] \(item.text)"
+            let line = "[\(item.subject == subject ? label ?? subject : item.subject)·\(item.kind)·\(formatter.string(from: item.updatedAt))·\(state)] \(item.text)"
             if count + line.count + 1 > characters { continue }
             lines.append(line); count += line.count + 1
         }

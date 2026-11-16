@@ -150,7 +150,7 @@ function fingerprint(value) {
 }
 function formSnapshot(group) {
   const c=state.config;
-  const values={connection:[c.endpoint,c.expectedSelfID],reply:[c.ai,state.persona,c.targets,c.onlineEnabled,c.visionEnabled,c.memoryEnabled,state.memoryOptions,c.groupParticipationEnabled,c.groupParticipationEvery],artwork:[state.artwork,c.targets.map(t=>[t.number,t.group,t.name,t.enabled])],image:state.imageGeneration,visual:state.visualTools};
+  const values={connection:[c.endpoint,c.expectedSelfID],reply:[c.ai,state.persona,c.senderPersonas??[],c.targets,c.onlineEnabled,c.visionEnabled,c.memoryEnabled,state.memoryOptions,c.groupParticipationEnabled,c.groupParticipationEvery],artwork:[state.artwork,c.targets.map(t=>[t.number,t.group,t.name,t.enabled])],image:state.imageGeneration,visual:state.visualTools};
   return fingerprint([c.expectedSelfID,values[group]]);
 }
 function shouldSync(group) {
@@ -180,6 +180,7 @@ function syncForms() {
     $('stickerKeywords').value=(persona.stickerKeywords??[]).join('\n');
     $('stickerRepeatHours').value=persona.stickerRepeatHours??24;
     for(const option of $('stickerEmotions').options) option.selected=(persona.stickerEmotions??['joy','smug','sleepy']).includes(option.value);
+    $('senderPersonas').replaceChildren(...(state.config.senderPersonas??[]).map(senderPersonaRow));
     targetDraft.clear(); targetSignature='';
   }
   renderArtwork(shouldSync('artwork'));
@@ -188,7 +189,36 @@ function syncForms() {
   text('draftStatus', conflicts.length ? `配置冲突：${conflicts.join('、')}已在别处修改，草稿保留，请重新载入。` : dirtyForms.size ? `未保存：${[...dirtyForms.keys()].map(k=>formNames[k]).join('、')}` : '设置已同步');
   $('discardDrafts').hidden=dirtyForms.size===0;
   $('discardDrafts').disabled=pending;
-  renderDraftControls(); renderPersonaPicker(); renderStickerTrigger();
+  renderDraftControls(); renderPersonaPicker(); renderStickerTrigger(); renderSenderPersonaControls();
+}
+const senderPersonaLimit=3;
+function senderPersonaRow(item={}) {
+  const row=document.createElement('div');row.className='sender-persona';row.dataset.id=item.id??crypto.randomUUID();
+  const number=document.createElement('input');number.className='sender-number';number.inputMode='numeric';number.autocomplete='off';number.placeholder='QQ 号';number.setAttribute('aria-label','指定 QQ 号');number.value=item.number??'';
+  const style=document.createElement('select');style.className='sender-style';style.setAttribute('aria-label','该 QQ 的性格');
+  for(const choice of state.personalities){const option=document.createElement('option');option.value=choice.id;option.textContent=choice.name;option.title=choice.description;style.append(option);}
+  style.value=item.style??'gentle';
+  const name=document.createElement('input');name.className='sender-name';name.maxLength=40;name.placeholder='自定义角色名称';name.setAttribute('aria-label','自定义角色名称');name.value=item.customName??'';
+  const prompt=document.createElement('textarea');prompt.className='sender-prompt';prompt.maxLength=4000;prompt.placeholder='自定义性格 prompt：角色身份、说话方式和互动偏好';prompt.setAttribute('aria-label','自定义性格 prompt');prompt.value=item.customPrompt??'';
+  const remove=document.createElement('button');remove.type='button';remove.textContent='删除';
+  remove.addEventListener('click',()=>{const list=$('senderPersonas');row.remove();list.dispatchEvent(new Event('input',{bubbles:true}));});
+  const toggleCustom=()=>{name.hidden=prompt.hidden=style.value!=='custom';};
+  style.addEventListener('change',toggleCustom);toggleCustom();
+  const names=document.createElement('input');names.className='sender-names';names.autocomplete='off';names.placeholder='可选：QQ 名称/群昵称，逗号分隔，用于识别群里提到他';names.setAttribute('aria-label','用于识别提到该用户的 QQ 名称');names.value=(item.names??[]).join('，');
+  row.append(number,style,remove,names,name,prompt);
+  return row;
+}
+function renderSenderPersonaControls() {
+  const busy=!state||state.running||state.busy||pending;
+  for(const control of $('senderPersonaPanel').querySelectorAll('input,select,textarea,button')) control.disabled=busy;
+  $('addSenderPersona').disabled=busy||$('senderPersonas').children.length>=senderPersonaLimit;
+}
+$('addSenderPersona').addEventListener('click',()=>{
+  const row=senderPersonaRow();$('senderPersonas').append(row);
+  row.dispatchEvent(new Event('input',{bubbles:true}));row.querySelector('input').focus();
+});
+function senderPersonaDrafts() {
+  return [...$('senderPersonas').children].map(row=>({id:row.dataset.id,number:row.querySelector('.sender-number').value.trim(),style:row.querySelector('.sender-style').value,customName:row.querySelector('.sender-name').value.trim(),customPrompt:row.querySelector('.sender-prompt').value.trim(),names:row.querySelector('.sender-names').value.split(/[,，\n]/).map(s=>s.trim()).filter(Boolean)}));
 }
 function renderStickerTrigger() {
   $('stickerEmotionFields').hidden=$('stickerTrigger').value!=='emotions';
@@ -495,7 +525,7 @@ for(const action of ['start','save','once']) $(action).addEventListener('click',
   ai.dailyLimit=Number($('daily').value);ai.cooldownSeconds=Number($('cooldown').value);
   ai.sendLimits={...(ai.sendLimits ?? {globalIntervalSeconds:3}),globalIntervalSeconds:Number($('globalInterval').value),daily:Number($('sendDaily').value),perChatDaily:Number($('chatDaily').value)};
   const persona={style:$('personaStyle').value,customName:$('customPersonaName').value,customPrompt:$('customPersonaPrompt').value,maxCharacters:Number($('maxCharacters').value),banter:Number($('banter').value),stickersEnabled:$('stickersEnabled').checked,stickerIntervalSeconds:Number($('stickerIntervalSeconds').value),stickerEveryReplies:Number($('stickerEveryReplies').value),stickerTrigger:$('stickerTrigger').value,stickerEmotions:[...$('stickerEmotions').selectedOptions].map(o=>o.value),stickerKeywords:$('stickerKeywords').value.split('\n').map(s=>s.trim()).filter(Boolean),stickerRepeatHours:Number($('stickerRepeatHours').value)};
-  const success=await act({action:'save',persona,groupParticipationEnabled:$('groupParticipationEnabled').checked,groupParticipationEvery:Number($('groupParticipationEvery').value),onlineEnabled:$('onlineEnabled').checked,visionEnabled:$('visionEnabled').checked,memoryEnabled:$('memoryEnabled').checked,memoryOptions:{messageThreshold:Number($('memoryMessages').value),characterThreshold:Number($('memoryCharacters').value),intervalMinutes:Number($('memoryMinutes').value),retrievalCharacters:Number($('memoryBudget').value)},enabled:[...$('targets').querySelectorAll('input:checked')].map(c=>c.dataset.target),ai});
+  const success=await act({action:'save',persona,senderPersonas:senderPersonaDrafts(),groupParticipationEnabled:$('groupParticipationEnabled').checked,groupParticipationEvery:Number($('groupParticipationEvery').value),onlineEnabled:$('onlineEnabled').checked,visionEnabled:$('visionEnabled').checked,memoryEnabled:$('memoryEnabled').checked,memoryOptions:{messageThreshold:Number($('memoryMessages').value),characterThreshold:Number($('memoryCharacters').value),intervalMinutes:Number($('memoryMinutes').value),retrievalCharacters:Number($('memoryBudget').value)},enabled:[...$('targets').querySelectorAll('input:checked')].map(c=>c.dataset.target),ai});
   if(success) {
     targetDraft.clear();
   }

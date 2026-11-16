@@ -90,7 +90,7 @@ public struct QQArtworkRequest: Codable, Equatable, Sendable {
     public var query: String
     public var prompt: String?
     public init(mode: String, query: String = "", prompt: String? = nil) { self.mode = mode; self.query = query; self.prompt = prompt }
-    public static let navigation = "────────\n【继续操作】\n• /next [新关键词] → 下一张\n• /search 关键词或作品ID → 搜图\n• /hot [关键词] → 日榜\n• /persona → 会话性格\n• /search help → 完整用法"
+    public static let navigation = "────────\n【继续操作】\n• /next [新关键词] → 下一张\n• /search 关键词或作品ID → 搜图\n• /hot [关键词] → 日榜\n• /search help → 完整用法"
     public static let help = """
     【插画命令】
     不调用大模型 · 仅已启用会话可用

@@ -72,6 +72,77 @@ struct QQPersonalityTests {
         let legacy = try JSONDecoder().decode(QQTarget.self, from: JSONEncoder().encode(QQTarget(number: "54321", name: "legacy", group: false)))
         #expect(legacy.personaStyle == nil)
     }
+    @Test func senderPersonaRoutesBySenderAcrossChatsAndValidates() throws {
+        var config = QQConfig(); config.expectedSelfID = "12345"
+        config.targets = [QQTarget(number: "99999", name: "synthetic group", group: true)]
+        var bound = QQSenderPersona(number: "54321", style: .custom)
+        bound.customName = "合成角色"; bound.customPrompt = "SYNTHETIC_BOUND_STYLE"
+        config.senderPersonas = [bound]
+        try config.validate()
+        var restored = try JSONDecoder().decode(QQConfig.self, from: JSONEncoder().encode(config))
+        func message(_ sender: String, group: Bool) -> QQIncoming {
+            QQIncoming(id: "1", sender: sender, target: group ? "99999" : sender, group: group, text: "hi", time: 0, replyTo: nil, images: [])
+        }
+        let shared = "12345:persona:" + bound.id.uuidString
+        for incoming in [message("54321", group: false), message("54321", group: true)] {
+            #expect(restored.persona(for: incoming).effectiveStyle == .custom)
+            #expect(restored.persona(for: incoming).prompt(notes: "").contains("SYNTHETIC_BOUND_STYLE"))
+            #expect(restored.memoryScope(for: incoming) == shared)
+        }
+        let other = message("66666", group: true)
+        #expect(restored.senderPersona(for: other) == nil)
+        #expect(restored.persona(for: other).effectiveStyle == .teasing)
+        #expect(!restored.persona(for: other).prompt(notes: "").contains("SYNTHETIC_BOUND_STYLE"))
+        #expect(restored.memoryScope(for: other) == "12345:group:99999")
+        #expect(restored.memoryScope(for: message("77777", group: false)) == "12345:private:77777")
+        restored.targets[0].personaStyle = .calm
+        #expect(restored.persona(for: other).effectiveStyle == .calm)
+        #expect(restored.persona(for: message("54321", group: true)).effectiveStyle == .custom)
+
+        var invalid = config
+        invalid.senderPersonas = ["1", "2", "3", "4"].map { QQSenderPersona(number: "5432" + $0, style: .gentle) }
+        #expect(throws: (any Error).self) { try invalid.validate() }
+        invalid.senderPersonas = [QQSenderPersona(number: "54321", style: .gentle), QQSenderPersona(number: "54321", style: .calm)]
+        #expect(throws: (any Error).self) { try invalid.validate() }
+        invalid.senderPersonas = [QQSenderPersona(number: "0", style: .gentle)]
+        #expect(throws: (any Error).self) { try invalid.validate() }
+        invalid.senderPersonas = [QQSenderPersona(number: "54321", style: .custom)]
+        #expect(throws: (any Error).self) { try invalid.validate() }
+        var legacy = try #require(JSONSerialization.jsonObject(with: JSONEncoder().encode(QQConfig())) as? [String: Any])
+        legacy.removeValue(forKey: "senderPersonas")
+        #expect(try JSONDecoder().decode(QQConfig.self, from: JSONSerialization.data(withJSONObject: legacy)).effectiveSenderPersonas.isEmpty)
+    }
+    @Test func boundUsersAreMentionedByAtOrConfiguredNameButRoutedByNumber() throws {
+        var config = QQConfig(); config.expectedSelfID = "12345"
+        var a = QQSenderPersona(number: "54321", style: .gentle); a.names = ["合成甲"]
+        let b = QQSenderPersona(number: "54322", style: .calm)
+        config.senderPersonas = [a, b]
+        try config.validate()
+        func message(_ sender: String, _ text: String, at: [String] = []) -> QQIncoming {
+            var incoming = QQIncoming(id: "1", sender: sender, target: "99999", group: true, text: text, time: 0, replyTo: nil, images: [])
+            incoming.mentionedUsers = at; return incoming
+        }
+        #expect(config.mentionedPersonas(in: message("66666", "合成甲今天去爬山")).map(\.number) == ["54321"])
+        #expect(config.mentionedPersonas(in: message("54321", "你好", at: ["54322"])).map(\.number) == ["54322"])
+        #expect(config.mentionedPersonas(in: message("54321", "合成甲说自己累了")).isEmpty)
+        #expect(config.mentionedPersonas(in: message("66666", "合成乙在吗")).isEmpty)
+        #expect(config.senderPersona(for: message("66666", "我是合成甲")) == nil)
+        #expect(QQMemoryBook.mentioner(account: "12345", sender: "66666").hasPrefix("MENTION_"))
+        #expect(QQMemoryBook.mentioner(account: "12345", sender: "12345") == "OWNER")
+
+        for bad in [["甲"], ["合成\n甲"], [" 合成甲"], Array(repeating: "合成甲", count: 6)] {
+            var invalid = config; invalid.senderPersonas![0].names = bad
+            #expect(throws: (any Error).self) { try invalid.validate() }
+        }
+    }
+    @Test func sharedMemoryShowsBoundUserUnderCurrentLabel() {
+        let now = Date()
+        let item = QQMemoryItem(subject: "PEER", kind: "preference", text: "喜欢蓝色", keywords: ["蓝色"], importance: 2, sourceIDs: ["1"], updatedAt: now, expiresAt: now.addingTimeInterval(86400))
+        let index = QQMemoryIndex([item])
+        let shown = index.context("蓝色", subject: "PEER", characters: 500, now: now, label: "MEMBER_abc123")
+        #expect(shown.contains("[MEMBER_abc123·preference")); #expect(!shown.contains("[PEER·"))
+        #expect(index.context("蓝色", subject: "PEER", characters: 500, now: now).contains("[PEER·preference"))
+    }
     @Test(arguments: QQPersonality.allCases) func styleIncludesBoundariesAndRebuff(_ style: QQPersonality) {
         var persona = QQPersona(); persona.effectiveStyle = style; persona.banter = 3
         let prompt = persona.prompt(notes: "")

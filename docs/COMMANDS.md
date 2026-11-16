@@ -4,15 +4,9 @@
 
 ## 性格
 
-| 命令 | 作用 |
-| --- | --- |
-| `/persona` 或 `/性格` | 当前性格 |
-| `/persona list` | 列表与说明 |
-| `/persona 猫娘` | 切换当前会话；也可用英文 ID |
-| `/persona 自定义` | 使用面板已保存的自定义定义；未配置 prompt 时不切换 |
-| `/persona default` | 恢复继承默认 |
+`/persona` 和 `/性格` 已停用：收到后只记一条跳过记录，不回复、不调用模型、不改设置，也不写入记忆或接话计数。性格只能在面板修改，包括默认性格、会话性格和最多 3 个指定 QQ 人设，见[使用说明](USER_GUIDE.md)。
 
-可选：雌小鬼(teasing)、温柔(gentle)、傲娇(tsundere)、元气(energetic)、理性(calm)、管家(butler)、猫娘(catgirl)、贴吧(tieba)、抽象(abstract)、戏精(drama)，以及面板已配置的自定义(custom)。群成员共享群性格；每个好友私聊独立。编号只是浏览标识，不是选择参数。选择会持久化，不抹掉记忆。
+可选：雌小鬼(teasing)、温柔(gentle)、傲娇(tsundere)、元气(energetic)、理性(calm)、管家(butler)、猫娘(catgirl)、贴吧(tieba)、抽象(abstract)、戏精(drama)，以及自定义(custom)。
 
 ## 插画
 
