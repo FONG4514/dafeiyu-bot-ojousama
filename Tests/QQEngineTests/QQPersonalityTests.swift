@@ -133,16 +133,21 @@ private final class PersonalityModelProtocol: URLProtocol, @unchecked Sendable {
             }
             #expect(prompts.suffix(2).allSatisfy { $0.contains("你认识的熟人") && $0.contains("常用称呼：合成甲") && $0.contains("[MEMBER_") })
             #expect(prompts.prefix(2).allSatisfy { !$0.contains("你认识的熟人") })
+            #expect(prompts.prefix(2).allSatisfy { $0.contains("[熟人名单]") && $0.contains("（就是当前发言者）") })
+            #expect(prompts.suffix(2).allSatisfy { $0.contains("[熟人名单]") && $0.contains("（本轮被提到）") && $0.contains("不因名单主动提起这些人") })
+            #expect(prompts.prefix(2).allSatisfy { $0.contains("本轮记忆只属于群 99999") && $0.contains("chat=\"99999\"") })
+            #expect(prompts.suffix(2).allSatisfy { $0.contains("chat=\"88888\"") && !$0.contains("chat=\"99999\"") })
             if mode == "proactive" { #expect(prompts.first?.contains("[QQ_PARTICIPATION]") == true) }
             if mode == "memory" {
-                let shared = try #require(engine.memoryBooks["12345:persona:" + bound.id.uuidString])
-                #expect(shared.recent.contains { $0.id == "2" && $0.subject == "PEER" })
-                #expect(engine.memoryBooks["12345:group:99999"] == nil)
+                let group = try #require(engine.memoryBooks["12345:group:99999"])
+                #expect(group.recent.contains { $0.id == "2" && $0.subject.hasPrefix("MEMBER_") })
+                #expect(engine.memoryBooks["12345:persona:" + bound.id.uuidString] == nil)
+                #expect(engine.memoryBooks["12345:private:54321"] == nil)
                 let other = try #require(engine.memoryBooks["12345:group:88888"])
                 #expect(other.recent.contains { $0.id == "3" && $0.subject.hasPrefix("MEMBER_") })
                 #expect(!other.recent.contains { $0.id == "2" })
-                #expect(shared.recent.contains { $0.id == "3" && $0.subject.hasPrefix("MENTION_") && $0.text.hasPrefix("（此句提到 PEER）") })
-                #expect(prompts.allSatisfy { $0.contains("不透露别人说过什么") })
+                #expect(!other.recent.contains { $0.text.contains("（此句提到 PEER）") })
+                #expect(prompts.allSatisfy { $0.contains("私聊与群聊互不读取") })
             }
         }
     }

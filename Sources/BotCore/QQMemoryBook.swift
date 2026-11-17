@@ -10,12 +10,39 @@ public struct QQMemoryOptions: Codable, Equatable, Sendable {
     public var characterThreshold = 6000
     public var intervalMinutes = 10
     public var retrievalCharacters = 1800
+    public var storeLimitMB = 2048
+    public var compressEvery = 12
+    public var superDailyLearns = 200
     public init() {}
     public func validate() throws {
         guard (4...100).contains(messageThreshold), (1000...20000).contains(characterThreshold),
-              (1...120).contains(intervalMinutes), (600...4000).contains(retrievalCharacters) else {
-            throw CoreError.invalid("记忆整理范围：4–100 条、1000–20000 字符、1–120 分钟；检索预算 600–4000 字符")
+              (1...120).contains(intervalMinutes), (600...4000).contains(retrievalCharacters),
+              (256...16384).contains(storeLimitMB), (6...50).contains(compressEvery), (1...2000).contains(superDailyLearns) else {
+            throw CoreError.invalid("记忆整理范围：4–100 条、1000–20000 字符、1–120 分钟；检索预算 600–4000 字符；内存 256–16384 MB；压缩间隔 6–50 轮；超级记忆每日整理 1–2000 次")
         }
+    }
+    private enum CodingKeys: String, CodingKey {
+        case messageThreshold, characterThreshold, intervalMinutes, retrievalCharacters, storeLimitMB, compressEvery, superDailyLearns
+    }
+    public init(from decoder: Decoder) throws {
+        let values = try decoder.container(keyedBy: CodingKeys.self)
+        messageThreshold = try values.decodeIfPresent(Int.self, forKey: .messageThreshold) ?? 20
+        characterThreshold = try values.decodeIfPresent(Int.self, forKey: .characterThreshold) ?? 6000
+        intervalMinutes = try values.decodeIfPresent(Int.self, forKey: .intervalMinutes) ?? 10
+        retrievalCharacters = try values.decodeIfPresent(Int.self, forKey: .retrievalCharacters) ?? 1800
+        storeLimitMB = try values.decodeIfPresent(Int.self, forKey: .storeLimitMB) ?? 2048
+        compressEvery = try values.decodeIfPresent(Int.self, forKey: .compressEvery) ?? 12
+        superDailyLearns = try values.decodeIfPresent(Int.self, forKey: .superDailyLearns) ?? 200
+    }
+    public func encode(to encoder: Encoder) throws {
+        var values = encoder.container(keyedBy: CodingKeys.self)
+        try values.encode(messageThreshold, forKey: .messageThreshold)
+        try values.encode(characterThreshold, forKey: .characterThreshold)
+        try values.encode(intervalMinutes, forKey: .intervalMinutes)
+        try values.encode(retrievalCharacters, forKey: .retrievalCharacters)
+        try values.encode(storeLimitMB, forKey: .storeLimitMB)
+        try values.encode(compressEvery, forKey: .compressEvery)
+        try values.encode(superDailyLearns, forKey: .superDailyLearns)
     }
 }
 
@@ -40,6 +67,10 @@ public struct QQMemoryItem: Codable, Equatable, Sendable, Identifiable {
     public let updatedAt: Date
     public let expiresAt: Date
     public var invalidatedAt: Date?
+    public init(id: String = UUID().uuidString, subject: String, kind: String, text: String, keywords: [String], importance: Int, sourceIDs: [String], updatedAt: Date, expiresAt: Date, invalidatedAt: Date? = nil) {
+        self.id = id; self.subject = subject; self.kind = kind; self.text = text; self.keywords = keywords
+        self.importance = importance; self.sourceIDs = sourceIDs; self.updatedAt = updatedAt; self.expiresAt = expiresAt; self.invalidatedAt = invalidatedAt
+    }
     public func current(_ now: Date) -> Bool { invalidatedAt == nil && expiresAt > now }
 }
 
@@ -55,6 +86,33 @@ public struct QQMemoryDelta: Decodable, Sendable {
         public let sourceID: String
         public let evidence: String
         public let days: Int
+        public let categories: [String]
+        private enum CodingKeys: String, CodingKey {
+            case operation, replaces, subject, kind, text, keywords, importance, sourceID, evidence, days, categories
+        }
+        public init(from decoder: Decoder) throws {
+            let values = try decoder.container(keyedBy: CodingKeys.self)
+            operation = try values.decode(String.self, forKey: .operation)
+            replaces = try values.decode([String].self, forKey: .replaces)
+            subject = try values.decode(String.self, forKey: .subject)
+            kind = try values.decode(String.self, forKey: .kind)
+            text = try values.decode(String.self, forKey: .text)
+            keywords = try values.decode([String].self, forKey: .keywords)
+            importance = try values.decode(Int.self, forKey: .importance)
+            sourceID = try values.decode(String.self, forKey: .sourceID)
+            evidence = try values.decode(String.self, forKey: .evidence)
+            days = try values.decode(Int.self, forKey: .days)
+            categories = try values.decodeIfPresent([String].self, forKey: .categories) ?? []
+        }
+        public func encode(to encoder: Encoder) throws {
+            var values = encoder.container(keyedBy: CodingKeys.self)
+            try values.encode(operation, forKey: .operation); try values.encode(replaces, forKey: .replaces)
+            try values.encode(subject, forKey: .subject); try values.encode(kind, forKey: .kind)
+            try values.encode(text, forKey: .text); try values.encode(keywords, forKey: .keywords)
+            try values.encode(importance, forKey: .importance); try values.encode(sourceID, forKey: .sourceID)
+            try values.encode(evidence, forKey: .evidence); try values.encode(days, forKey: .days)
+            try values.encode(categories, forKey: .categories)
+        }
     }
     public let summary: String
     public let changes: [Change]
@@ -79,6 +137,8 @@ public struct QQMemoryBook: Codable, Equatable, Sendable {
     public private(set) var lastCompactedAt: Date?
     public private(set) var droppedEvents = 0
     public init() {}
+    public mutating func replaceItems(_ replacement: [QQMemoryItem]) { items = replacement }
+    public mutating func clearItems() { items = [] }
     public static func subject(account: String, target: String, sender: String) -> String {
         if sender == account { return "OWNER" }
         if target.hasPrefix("private:") { return "PEER" }
@@ -105,8 +165,11 @@ public struct QQMemoryBook: Codable, Equatable, Sendable {
         return true
     }
     public func due(options: QQMemoryOptions, now: Date = Date()) -> Bool {
+        due(messages: options.messageThreshold, characters: options.characterThreshold, minutes: options.intervalMinutes, now: now)
+    }
+    public func due(messages: Int, characters: Int, minutes: Int, now: Date = Date()) -> Bool {
         guard let oldest = pending.first else { return false }
-        return pending.count >= options.messageThreshold || pending.reduce(0, { $0 + $1.text.count }) >= options.characterThreshold || now.timeIntervalSince(oldest.at) >= Double(options.intervalMinutes * 60)
+        return pending.count >= messages || pending.reduce(0, { $0 + $1.text.count }) >= characters || now.timeIntervalSince(oldest.at) >= Double(minutes * 60)
     }
     public func batch() -> [QQMemoryEvent] {
         var result: [QQMemoryEvent] = [], size = 0
@@ -133,6 +196,7 @@ public struct QQMemoryBook: Codable, Equatable, Sendable {
                   item.replaces.allSatisfy({ id in items.contains { $0.id == id && $0.subject == item.subject && $0.current(now) } }),
                   item.text.count <= 180, item.keywords.count <= 6, item.keywords.allSatisfy({ !$0.isEmpty && $0.count <= 20 }),
                   (1...3).contains(item.importance), (1...365).contains(item.days),
+                  QQMemoryCategory.checked(item.categories) != nil,
                   (item.operation == "forget" ? !item.replaces.isEmpty && item.text.isEmpty : !item.text.isEmpty) else {
                 throw CoreError.invalid("记忆证据、归属或更新范围未通过校验")
             }
@@ -150,10 +214,8 @@ public struct QQMemoryBook: Codable, Equatable, Sendable {
         if !delta.summary.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
             items.append(QQMemoryItem(subject: "CONVERSATION", kind: "episode", text: Self.redact(delta.summary), keywords: [], importance: 1, sourceIDs: batch.map(\.id), updatedAt: now, expiresAt: now.addingTimeInterval(90 * 86400)))
         }
-        let active = items.filter { $0.kind != "episode" && $0.current(now) }.sorted { ($0.importance, $0.updatedAt) > ($1.importance, $1.updatedAt) }.prefix(256)
-        let historical = items.filter { !$0.current(now) && now.timeIntervalSince($0.invalidatedAt ?? $0.expiresAt) < 90 * 86400 }.suffix(64)
-        let episodes = items.filter { $0.kind == "episode" && $0.current(now) }.suffix(64)
-        items = Array(active) + historical + episodes
+        // Expired rows stay addressable as history. SQLite, not this cap, bounds storage.
+        items.removeAll { !$0.current(now) && now.timeIntervalSince($0.invalidatedAt ?? $0.expiresAt) >= 90 * 86400 }
         pending.removeAll { sources[$0.id] != nil }; lastCompactedAt = now
     }
     public mutating func importLegacy(text: String, subject: String, at: Date) {
@@ -175,7 +237,7 @@ public struct QQMemoryIndex: Sendable {
             for term in Self.terms(item.text + " " + item.keywords.joined(separator: " ")) { postings[term, default: []].insert(item.id) }
         }
     }
-    private static func terms(_ text: String) -> Set<String> {
+    public static func terms(_ text: String) -> Set<String> {
         let scalars = Array(text.lowercased().unicodeScalars)
         var words = Set<String>(), word = "", chinese: Unicode.Scalar?
         for c in scalars.prefix(12000) {

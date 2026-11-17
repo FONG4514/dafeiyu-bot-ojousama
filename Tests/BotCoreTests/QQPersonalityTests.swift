@@ -83,12 +83,15 @@ struct QQPersonalityTests {
         func message(_ sender: String, group: Bool) -> QQIncoming {
             QQIncoming(id: "1", sender: sender, target: group ? "99999" : sender, group: group, text: "hi", time: 0, replyTo: nil, images: [])
         }
-        let shared = "12345:persona:" + bound.id.uuidString
-        for incoming in [message("54321", group: false), message("54321", group: true)] {
+        let privateChat = message("54321", group: false), groupChat = message("54321", group: true)
+        for incoming in [privateChat, groupChat] {
             #expect(restored.persona(for: incoming).effectiveStyle == .custom)
             #expect(restored.persona(for: incoming).prompt(notes: "").contains("SYNTHETIC_BOUND_STYLE"))
-            #expect(restored.memoryScope(for: incoming) == shared)
         }
+        #expect(restored.memoryScope(for: privateChat) == "12345:private:54321")
+        #expect(restored.memoryScope(for: groupChat) == "12345:group:99999")
+        #expect(restored.memoryAccessPrompt(for: privateChat).contains("chat=\"54321\"") && restored.memoryAccessPrompt(for: privateChat).contains("只属于私聊对象"))
+        #expect(restored.memoryAccessPrompt(for: groupChat).contains("chat=\"99999\"") && !restored.memoryAccessPrompt(for: groupChat).contains("54321"))
         let other = message("66666", group: true)
         #expect(restored.senderPersona(for: other) == nil)
         #expect(restored.persona(for: other).effectiveStyle == .teasing)
@@ -129,6 +132,19 @@ struct QQPersonalityTests {
         #expect(config.senderPersona(for: message("66666", "我是合成甲")) == nil)
         #expect(QQMemoryBook.mentioner(account: "12345", sender: "66666").hasPrefix("MENTION_"))
         #expect(QQMemoryBook.mentioner(account: "12345", sender: "12345") == "OWNER")
+
+        let member = QQMemoryBook.subject(account: "12345", target: "group:99999", sender: "54321")
+        let groupRoster = config.boundRoster(for: message("66666", "合成甲今天去爬山"))
+        #expect(groupRoster.contains("[\(member)] 常用称呼：合成甲（本轮被提到）"))
+        #expect(groupRoster.contains("[指定用户2]") == false && groupRoster.contains("[" + QQMemoryBook.subject(account: "12345", target: "group:99999", sender: "54322") + "]"))
+        #expect(groupRoster.contains("不因名单主动提起这些人") && !groupRoster.contains("54321"))
+        let peer = QQIncoming(id: "2", sender: "54322", target: "54322", group: false, text: "在吗", time: 0, replyTo: nil, images: [])
+        let privateRoster = config.boundRoster(for: peer)
+        #expect(privateRoster.contains("[PEER]（就是当前发言者）") && privateRoster.contains("[合成甲] 常用称呼：合成甲"))
+        let stranger = QQIncoming(id: "3", sender: "77777", target: "77777", group: false, text: "在吗", time: 0, replyTo: nil, images: [])
+        #expect(config.boundRoster(for: stranger).contains("[指定用户2]") && !config.boundRoster(for: stranger).contains("PEER"))
+        #expect(config.boundRoster(chat: "persona:" + a.id.uuidString).contains("[PEER] 常用称呼：合成甲"))
+        #expect(QQConfig().boundRoster(for: stranger).isEmpty)
 
         for bad in [["甲"], ["合成\n甲"], [" 合成甲"], Array(repeating: "合成甲", count: 6)] {
             var invalid = config; invalid.senderPersonas![0].names = bad

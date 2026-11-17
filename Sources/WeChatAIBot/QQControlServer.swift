@@ -210,6 +210,19 @@ import BotCore
                 case "setPersona":
                     guard let target = request.target, let style = request.personaStyle else { throw AppFailure.message("缺少会话或性格") }
                     engine.setPersonaStyle(style, target: target)
+                case "setMemoryMode":
+                    guard let target = request.target, let mode = request.memoryMode else { throw AppFailure.message("缺少会话或记忆模式") }
+                    engine.setMemoryMode(mode, target: target)
+                case "exportMemory":
+                    try engine.exportMemorySnapshot()
+                case "deleteMemoryItem":
+                    guard !engine.running, let scope = request.target, let id = request.memoryItem else { throw AppFailure.message("请先暂停后再删除记忆") }
+                    try engine.deleteMemoryItem(scope: scope, id: id)
+                case "deleteMemoryCategory":
+                    guard !engine.running, let scope = request.target, let name = request.memoryCategory else { throw AppFailure.message("请先暂停后再删除类别") }
+                    try engine.deleteMemoryCategory(scope: scope, name: name)
+                case "reclassifyMemory":
+                    engine.requestReclassify()
                 case "save":
                     guard !engine.running, !engine.busy, !engine.runtimeBusy else { throw AppFailure.message("请先暂停") }
                     var updated = engine.config
@@ -241,7 +254,7 @@ import BotCore
             let config = try JSONSerialization.jsonObject(with: JSONEncoder().encode(engine.config))
             func memoryLabel(_ key: String) -> String {
                 guard let bound = engine.config.effectiveSenderPersonas.first(where: { engine.config.memoryScope($0) == key }) else { return key }
-                return "指定 QQ \(bound.number) 的人设（跨会话共享）"
+                return "指定 QQ \(bound.number) 的旧共享记忆（已停用，不再读取）"
             }
             let object: [String: Any] = ["runtime": ["module": "qq", "version": QQRuntimeRegistration.version, "generation": generation, "pid": ProcessInfo.processInfo.processIdentifier], "config": config, "configurationSaved": configurationSaved, "configurationRevision": currentConfigurationRevision(), "connected": engine.connected, "running": engine.running,
                 "busy": engine.busy || engine.runtimeBusy, "status": engine.status, "error": engine.error ?? "",
@@ -261,9 +274,9 @@ import BotCore
                 "artworkConfirmed": engine.artworkLedger.deliveries.filter { $0.state == "confirmed" }.count,
                 "memoryOptions": try JSONSerialization.jsonObject(with: JSONEncoder().encode(engine.config.effectiveMemoryOptions)),
                 "memoryStatus": engine.memoryStatus, "memoryBusy": engine.memoryBusy,
-                "memories": engine.memoryBooks.filter { $0.key.hasPrefix(engine.config.expectedSelfID + ":") }.sorted { $0.key < $1.key }.map { key, book in
-                    ["key": memoryLabel(key), "summary": book.items.filter { $0.current(Date()) }.suffix(32).map { "[\($0.subject)·\($0.kind)] \($0.text)" }.joined(separator: "\n"), "updatedAt": (book.lastCompactedAt ?? book.recent.last?.at ?? Date.distantPast).timeIntervalSince1970, "pending": book.pending.count, "items": book.items.filter { $0.current(Date()) }.count, "dropped": book.droppedEvents] as [String: Any]
-                },
+                "memoryBytes": engine.memoryUsageBytes, "memoryToolCalls": engine.memoryToolCallCount, "memoryPromptCharacters": engine.memoryPromptCharacterCount,
+                "superLearnRemaining": engine.superLearnRemaining(),
+                "memories": engine.memoryPanels().map { row in var labeled = row; labeled["scope"] = row["key"] ?? ""; labeled["key"] = memoryLabel(row["key"] as? String ?? ""); return labeled },
                 "personalities": QQPersonality.allCases.map { ["id": $0.rawValue, "name": $0.name, "description": $0.description] },
                 "persona": try JSONSerialization.jsonObject(with: JSONEncoder().encode(engine.config.effectivePersona)),
                 "stickers": engine.stickerLibrary.items.map { ["id": $0.id, "title": $0.title, "source": $0.source, "context": $0.context ?? "", "emotion": $0.emotion.rawValue, "author": $0.author ?? "", "license": $0.license ?? "", "local": $0.id.hasPrefix("local-"), "publicSharing": $0.publicSharing ?? false] as [String: Any] },
@@ -311,6 +324,9 @@ import BotCore
         var persona: QQPersona?
         var senderPersonas: [QQSenderPersona]?
         var personaStyle: String?
+        var memoryMode: String?
+        var memoryItem: String?
+        var memoryCategory: String?
         var onlineEnabled: Bool?
         var visionEnabled: Bool?
         var memoryEnabled: Bool?

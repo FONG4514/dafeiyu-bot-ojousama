@@ -127,7 +127,7 @@ struct DeepSeekClient {
     }
     func reply(key: String, config: BotConfig, rule: ChatRule, history: [ChatTurn], text: String, jsonOutput: Bool = false, thinkingEnabled: Bool = false, images: [Data] = [],
                toolHandler: (@MainActor @Sendable (String, String) async throws -> ModelToolResult)? = nil,
-               onlineToolsEnabled: Bool = true, imageGenerationEnabled: Bool = false, artworkEnabled: Bool = false,
+               onlineToolsEnabled: Bool = true, imageGenerationEnabled: Bool = false, artworkEnabled: Bool = false, memoryToolEnabled: Bool = false,
                reserve: @escaping @Sendable () async throws -> Void) async throws -> ModelResult {
         var messages: [[String: Any]] = [["role": "system", "content": rule.prompt.isEmpty ? config.prompt : rule.prompt]]
         if thinkingEnabled && !history.isEmpty {
@@ -169,8 +169,9 @@ struct DeepSeekClient {
             if thinkingEnabled { parameters["reasoning_effort"] = "high" }
             if jsonOutput && (toolHandler == nil || round > 0) { parameters["response_format"] = ["type": "json_object"] }
             if toolHandler != nil && round == 0 {
-                parameters["tools"] = (onlineToolsEnabled ? QQOnlineTools.definitions : []) + (imageGenerationEnabled ? [QQImageGenerator.definition] : []) + (artworkEnabled ? [QQArtworkLibrary.definition] : [])
-                parameters["tool_choice"] = "auto"
+                var tools = (onlineToolsEnabled ? QQOnlineTools.definitions : []) + (imageGenerationEnabled ? [QQImageGenerator.definition] : []) + (artworkEnabled ? [QQArtworkLibrary.definition] : [])
+                if memoryToolEnabled { tools.append(QQMemoryRecall.definition) }
+                if !tools.isEmpty { parameters["tools"] = tools; parameters["tool_choice"] = "auto" }
             }
             let body = try JSONSerialization.data(withJSONObject: parameters)
             var response: Response?
@@ -232,12 +233,12 @@ struct DeepSeekClient {
     // The reviewer gets original context and pixels, not just the draft's interpretation.
     func reviewedQQReply(key: String, config: BotConfig, rule: ChatRule, history: [ChatTurn], text: String,
                          images: [Data] = [], toolHandler: (@MainActor @Sendable (String, String) async throws -> ModelToolResult)? = nil,
-               onlineToolsEnabled: Bool = true, imageGenerationEnabled: Bool = false, artworkEnabled: Bool = false,
+               onlineToolsEnabled: Bool = true, imageGenerationEnabled: Bool = false, artworkEnabled: Bool = false, memoryToolEnabled: Bool = false,
                          stickerOptions: [QQStickerLibrary.Item] = [], proactive: Bool = false, reserve: @escaping @Sendable () async throws -> Void) async throws -> ModelResult {
         var generationRule = rule
         if proactive { generationRule.prompt += "\n" + QQGroupContext.participationPrompt }
         var draft = try await reply(key: key, config: config, rule: generationRule, history: history, text: text,
-            jsonOutput: true, thinkingEnabled: true, images: images, toolHandler: toolHandler, onlineToolsEnabled: onlineToolsEnabled, imageGenerationEnabled: imageGenerationEnabled, artworkEnabled: artworkEnabled, reserve: reserve)
+            jsonOutput: true, thinkingEnabled: true, images: images, toolHandler: toolHandler, onlineToolsEnabled: onlineToolsEnabled, imageGenerationEnabled: imageGenerationEnabled, artworkEnabled: artworkEnabled, memoryToolEnabled: memoryToolEnabled, reserve: reserve)
         if proactive {
             draft = participationResult(draft)
             if !draft.shouldSend { return draft } // No review or sticker work for a deliberate silence.

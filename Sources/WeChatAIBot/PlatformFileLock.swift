@@ -77,6 +77,32 @@ func protectPrivateFile(_ file: URL) throws {
     #endif
 }
 
+/// Replace a private file without deleting the destination first. POSIX rename overwrites atomically.
+func replacePrivateFile(at destination: URL, with temporary: URL) throws {
+    try protectPrivateFile(temporary)
+    #if os(Windows)
+    let deadline = DispatchTime.now() + .seconds(1)
+    while true {
+        let result = temporary.path.withCString(encodedAs: UTF16.self) { source in
+            destination.path.withCString(encodedAs: UTF16.self) { target in
+                let success = MoveFileExW(source, target, DWORD(MOVEFILE_REPLACE_EXISTING) | DWORD(MOVEFILE_WRITE_THROUGH))
+                return (success: success, error: success ? DWORD(ERROR_SUCCESS) : GetLastError())
+            }
+        }
+        if result.success { return }
+        let code = result.error
+        guard (code == DWORD(ERROR_SHARING_VIOLATION) || code == DWORD(ERROR_LOCK_VIOLATION)), DispatchTime.now() < deadline else {
+            throw AppFailure.message("无法原子更新本机数据（Windows \(code)）")
+        }
+        Thread.sleep(forTimeInterval: 0.02)
+    }
+    #else
+    guard temporary.path.withCString({ source in destination.path.withCString { target in rename(source, target) } }) == 0 else {
+        throw AppFailure.message("无法原子替换本机数据")
+    }
+    #endif
+}
+
 func createPrivateDirectory(_ directory: URL, intermediates: Bool = true) throws {
     #if os(Windows)
     try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: intermediates)

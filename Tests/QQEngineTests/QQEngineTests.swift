@@ -496,7 +496,7 @@ private final class DelayedModelProtocol: URLProtocol, @unchecked Sendable {
         let reloaded = QQEngine(allowAuthenticationUI: false, storageDirectory: directory)
         if mode == "pause" { #expect(reloaded.memoryBooks["12345:group:99999"]?.pending.count == 4) }
         else if mode == "clear" { #expect(reloaded.memoryBooks.isEmpty) }
-        else { #expect(reloaded.memoryBooks["12345:group:99999"]?.items.count == 2); #expect(reloaded.memoryBooks["12345:group:99999"]?.pending.isEmpty == true) }
+        else { #expect(reloaded.storedMemoryCount("12345:group:99999") == 2); #expect(reloaded.memoryBooks["12345:group:99999"]?.items.isEmpty == true); #expect(reloaded.memoryBooks["12345:group:99999"]?.pending.isEmpty == true) }
     }
     @Test func learningPayloadIsCompleteAndCandidateAuthorityMatchesSuppliedBudget() async throws {
         DelayedModelProtocol.reset()
@@ -679,7 +679,7 @@ private final class DelayedModelProtocol: URLProtocol, @unchecked Sendable {
         }
         if control == "memory" {
             let until = Date().addingTimeInterval(12)
-            while (engine.sends.confirmed < 9 || engine.memoryBusy || engine.memoryBooks["12345:private:54321"]?.items.isEmpty != false) && Date() < until {
+            while (engine.sends.confirmed < 9 || engine.memoryBusy || !engine.storedMemoryContains("12345:private:54321", text: "当前会话的合成测试事实")) && Date() < until {
                 DelayedModelProtocol.completePending()
                 try await Task.sleep(nanoseconds: 20_000_000)
             }
@@ -688,7 +688,8 @@ private final class DelayedModelProtocol: URLProtocol, @unchecked Sendable {
             #expect(Set(engine.memoryBooks.keys) == ["12345:private:54321"])
             engine.disconnect()
             let reloaded = QQEngine(allowAuthenticationUI: false, storageDirectory: directory)
-            #expect(reloaded.memoryBooks.values.first?.items.contains { $0.text == "当前会话的合成测试事实" } == true)
+            #expect(reloaded.storedMemoryContains("12345:private:54321", text: "当前会话的合成测试事实"))
+            #expect(reloaded.memoryBooks.values.first?.items.isEmpty == true)
             reloaded.clearMemory(try #require(reloaded.config.targets.first).id)
             #expect(reloaded.memoryBooks.isEmpty)
             let cleared = QQEngine(allowAuthenticationUI: false, storageDirectory: directory)

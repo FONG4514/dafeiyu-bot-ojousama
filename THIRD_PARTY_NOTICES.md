@@ -15,6 +15,7 @@
 
 - Windows/WSL 与 Linux 使用 [Swift Crypto](https://github.com/apple/swift-crypto)（Apache-2.0）及其上游依赖，图像适配使用系统安装的 [Pillow](https://github.com/python-pillow/Pillow)（HPND）。这些依赖的许可证不会被本仓库 MIT 替代；分发编译产物时需同时保留对应许可与声明。
 - Linux 的 OneBot WebSocket 连接使用 [WebSocketKit](https://github.com/vapor/websocket-kit)（MIT）及 [SwiftNIO](https://github.com/apple/swift-nio)（Apache-2.0）生态依赖，版本范围见 `Package.swift`。重新分发这些依赖或编译产物时，同样需要保留上游许可证和声明。
+- 记忆库使用未修改的 SQLite 3.49.2 amalgamation（公有领域，https://www.sqlite.org/copyright.html），源码和校验值在 `Sources/CSQLite/README.md`。
 
 ## 面板角色 Logo（2026-10-25）
 

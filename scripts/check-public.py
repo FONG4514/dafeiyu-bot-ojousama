@@ -27,7 +27,7 @@ for p in paths:
         entry = subprocess.run(['git', '-C', str(root), 'ls-files', '-s', '--', str(rel)], capture_output=True, check=True).stdout
         if entry.startswith(b'120000 '): failures.append((str(rel),0,'symlink'));continue
     elif p.is_symlink(): failures.append((str(rel),0,'symlink'));continue
-    if any(x in {'.build','dist','config','private','local'} for x in rel.parts) or p.suffix in {'.log','.jsonl','.key','.pem','.p12','.db','.har'} or p.name in {'.env','qq-state.json','state.json'}:
+    if any(x in {'.build','dist','config','private','local'} for x in rel.parts) or p.suffix in {'.log','.jsonl','.key','.pem','.p12','.db','.sqlite','.har'} or p.name in {'.env','qq-state.json','state.json'}:
         failures.append((str(rel),0,'runtime or credential file'));continue
     try:
         if args.staged:
@@ -38,6 +38,11 @@ for p in paths:
             data=p.read_bytes()
     except FileNotFoundError: failures.append((str(rel),0,'tracked file missing'));continue
     if p.suffix.lower() in {'.png','.jpg','.jpeg','.webp'}: continue  # Human visual review is required separately.
+    official_sqlite = {
+        'Sources/CSQLite/sqlite3.c': 'a891421dc9eb944bfa696458fa55e2676d6187378632563126b0d98c34c7ad07',
+        'Sources/CSQLite/include/sqlite3.h': '2198c66d4c59ae86421590c27fd53309ec14a595ae31c0c7143247444018a0bd',
+    }.get(rel.as_posix())
+    if official_sqlite and hashlib.sha256(data).hexdigest() == official_sqlite: continue
     try: text=data.decode('utf-8')
     except UnicodeDecodeError: failures.append((str(rel),0,'unreviewed binary'));continue
     # Preserve the public copyright contact in the byte-pinned official ICU license.

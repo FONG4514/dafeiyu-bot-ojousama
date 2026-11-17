@@ -115,6 +115,8 @@ function renderDraftControls() {
   $('save').disabled=!replyDirty||!state||state.running||state.busy||pending;
 }
 
+$('exportMemory').addEventListener('click',()=>act({action:'exportMemory'}));
+$('reclassifyMemory').addEventListener('click',()=>act({action:'reclassifyMemory'}));
 $('restoreDefaults').addEventListener('click',()=>{
   const page=document.body.dataset.page;
   const sections=page==='reply' ? ['personaPanel','groupPanel','replyPanel'] : page==='memory' ? ['memoryPanel'] : [activeTool];
@@ -172,7 +174,7 @@ function syncForms() {
   }
   if(shouldSync('reply')) {
     const ai=state.config.ai, persona=state.persona, memory=state.memoryOptions;
-    for(const [id,value] of Object.entries({model:ai.model,prompt:ai.prompt,daily:ai.dailyLimit,cooldown:ai.cooldownSeconds,sendDaily:ai.sendLimits?.daily??100,chatDaily:ai.sendLimits?.perChatDaily??30,globalInterval:ai.sendLimits?.globalIntervalSeconds??3,workStart:ai.workStart,workEnd:ai.workEnd,groupParticipationEvery:state.config.groupParticipationEvery??10,personaStyle:persona.style??'teasing',maxCharacters:persona.maxCharacters,banter:persona.banter,stickerIntervalSeconds:persona.stickerIntervalSeconds,stickerEveryReplies:persona.stickerEveryReplies??3,memoryMessages:memory.messageThreshold,memoryCharacters:memory.characterThreshold,memoryMinutes:memory.intervalMinutes,memoryBudget:memory.retrievalCharacters})) $(id).value=value;
+    for(const [id,value] of Object.entries({model:ai.model,prompt:ai.prompt,daily:ai.dailyLimit,cooldown:ai.cooldownSeconds,sendDaily:ai.sendLimits?.daily??100,chatDaily:ai.sendLimits?.perChatDaily??30,globalInterval:ai.sendLimits?.globalIntervalSeconds??3,workStart:ai.workStart,workEnd:ai.workEnd,groupParticipationEvery:state.config.groupParticipationEvery??10,personaStyle:persona.style??'teasing',maxCharacters:persona.maxCharacters,banter:persona.banter,stickerIntervalSeconds:persona.stickerIntervalSeconds,stickerEveryReplies:persona.stickerEveryReplies??3,memoryMessages:memory.messageThreshold,memoryCharacters:memory.characterThreshold,memoryMinutes:memory.intervalMinutes,memoryBudget:memory.retrievalCharacters,memoryLimit:memory.storeLimitMB??2048,memoryCompress:memory.compressEvery??12,memorySuper:memory.superDailyLearns??200})) $(id).value=value;
     for(const id of ['onlineEnabled','visionEnabled','memoryEnabled','groupParticipationEnabled']) $(id).checked=state.config[id]??false;
     $('workHoursEnabled').checked=ai.workHoursEnabled; $('stickersEnabled').checked=persona.stickersEnabled;
     $('customPersonaName').value=persona.customName??''; $('customPersonaPrompt').value=persona.customPrompt??'';
@@ -408,7 +410,7 @@ function render() {
   $('start').disabled = !state.connected || state.running || state.busy || pending;
   $('once').disabled = $('start').disabled;
   for(const id of ['endpoint','account','token','key','saveConnection']) $(id).disabled = state.connected || state.busy || pending;
-  for(const id of ['model','prompt','daily','cooldown','sendDaily','chatDaily','globalInterval','duration','personaStyle','maxCharacters','banter','stickersEnabled','stickerIntervalSeconds','stickerEveryReplies','onlineEnabled','visionEnabled','memoryEnabled','memoryMessages','memoryCharacters','memoryMinutes','memoryBudget','groupParticipationEnabled','groupParticipationEvery','workHoursEnabled','workStart','workEnd','save']) $(id).disabled = state.running || state.busy || pending;
+  for(const id of ['model','prompt','daily','cooldown','sendDaily','chatDaily','globalInterval','duration','personaStyle','maxCharacters','banter','stickersEnabled','stickerIntervalSeconds','stickerEveryReplies','onlineEnabled','visionEnabled','memoryEnabled','memoryMessages','memoryCharacters','memoryMinutes','memoryBudget','memoryLimit','memoryCompress','memorySuper','exportMemory','reclassifyMemory','groupParticipationEnabled','groupParticipationEvery','workHoursEnabled','workStart','workEnd','save']) $(id).disabled = state.running || state.busy || pending;
   text('imageGenCredentials', `本次已载入：智谱 ${state.imageCredentials?.zhipu ? '有凭证' : '未载入'}；Cloudflare ${state.imageCredentials?.cloudflare ? '有凭证' : '未载入'}`);
   text('groupParticipationCounts', state.config.groupParticipationEnabled ? state.config.targets.filter(t=>t.enabled && t.group).map(t=>`${t.name}：${state.groupMessageCounts?.['group:'+t.number] ?? 0} / ${state.config.groupParticipationEvery ?? 10} 条`).join('；') || '尚未启用群聊' : '');
   text('memoryStatus', state.memoryStatus==='记忆等待新消息' ? '' : state.memoryStatus);
@@ -435,7 +437,7 @@ function render() {
   if(catalogSignature!==stickerSignature) {stickerSignature=catalogSignature;text('stickerCount',state.stickers.length);if($('stickerGallery').open)renderStickers(state.stickers);}
   for(const id of ['stickerTrigger','stickerEmotions','stickerKeywords','stickerRepeatHours','stickerFiles','importEmotion','importContext','importAuthor','importLicense','importSource','importPublic','importStickers']) $(id).disabled=state.running||state.busy||pending||importingStickers;
   syncForms();
-  const signature = JSON.stringify(state.config.targets.map(t => [t.id,t.name,t.number,t.group,t.enabled,t.personaStyle]));
+  const signature = JSON.stringify(state.config.targets.map(t => [t.id,t.name,t.number,t.group,t.enabled,t.personaStyle,t.memoryMode]));
   if(signature !== targetSignature) {
     $('targets').replaceChildren(); targetSignature = signature;
     for(const target of state.config.targets) {
@@ -449,13 +451,25 @@ function render() {
       const style=document.createElement('select');style.setAttribute('aria-label',`本会话性格：${targetName}`);style.dataset.target=key;
       for(const item of [{id:'default',name:'跟随默认'},...state.personalities]){const option=document.createElement('option');option.value=item.id;option.textContent=item.name;style.append(option);}
       style.value=target.personaStyle??'default';style.addEventListener('change',()=>act({action:'setPersona',target:key,personaStyle:style.value}));
-      row.append(label,style,button('接管',{action:'takeOver',target:key},`接管：${targetName}`),button('清除记忆并暂停',{action:'clearMemory',target:key},`清除记忆并暂停：${targetName}`),button('移除',{action:'remove',target:key},`移除：${targetName}`));
+      const mode=document.createElement('select');mode.setAttribute('aria-label',`记忆模式：${targetName}`);mode.dataset.target=key;mode.dataset.memoryMode='1';
+      for(const item of [['balanced','均衡'],['super','超级记忆'],['fast','极速']]){const option=document.createElement('option');option.value=item[0];option.textContent=item[1];mode.append(option);}
+      mode.value=target.memoryMode??'balanced';mode.addEventListener('change',()=>act({action:'setMemoryMode',target:key,memoryMode:mode.value}));
+      const quota=document.createElement('span');quota.className='sub';quota.textContent=target.memoryMode==='super' ? `今日剩余 ${state.superLearnRemaining?.[key] ?? ''} 次` : '';
+      row.append(label,style,mode,quota,button('接管',{action:'takeOver',target:key},`接管：${targetName}`),button('清除记忆并暂停',{action:'clearMemory',target:key},`清除记忆并暂停：${targetName}`),button('移除',{action:'remove',target:key},`移除：${targetName}`));
       $('targets').append(row);
     }
   }
   renderScopeActions();
+  text('memoryUsage', `记忆库约 ${Math.round((state.memoryBytes??0)/1048576)} MB，查库 ${state.memoryToolCalls??0} 次，注入目录 ${state.memoryPromptCharacters??0} 字`);
   $('memories').replaceChildren();
-  for(const memory of state.memories ?? []) { const p=document.createElement('p');p.textContent=`${memory.key} · ${memory.items ?? 0} 项重点 / ${memory.pending ?? 0} 条待整理 / 容量丢弃 ${memory.dropped ?? 0} 条 · ${new Date(memory.updatedAt*1000).toLocaleString('zh-CN')}：${memory.summary}`;$('memories').append(p); }
+  for(const memory of state.memories ?? []) {
+    const block=document.createElement('div');
+    const p=document.createElement('p');p.textContent=`${memory.key} · ${memory.items ?? 0} 项 / ${memory.categories ?? 0} 个类别 / ${memory.pending ?? 0} 条待整理 · ${new Date(memory.updatedAt*1000).toLocaleString('zh-CN')}：${memory.summary}`;
+    block.append(p);
+    for(const entry of memory.entries ?? []){const remove=document.createElement('button');remove.type='button';remove.textContent=`删除条目：${entry.category}`;remove.addEventListener('click',()=>act({action:'deleteMemoryItem',target:memory.scope,memoryItem:entry.id}));block.append(remove);}
+    if(memory.scope){const remove=document.createElement('button');remove.type='button';remove.textContent='删除整个类别';remove.addEventListener('click',()=>{const name=prompt('要删除的类别名');if(name)act({action:'deleteMemoryCategory',target:memory.scope,memoryCategory:name});});block.append(remove);}
+    $('memories').append(block);
+  }
   if(!state.memories?.length) text('memories','尚无会话记忆');
   document.querySelector('.grid').inert=false;
   $('restoreDefaults').disabled=state.running||state.busy||pending;
@@ -467,9 +481,9 @@ function renderScopeActions() {
   for(const select of $('targets').querySelectorAll('select')) {
     select.disabled=busy||hasDraft;
     const target=state.config.targets.find(t=>`${t.group?'group':'private'}:${t.number}`===select.dataset.target);
-    select.value=target?.personaStyle??'default';
+    select.value=select.dataset.memoryMode ? (target?.memoryMode??'balanced') : (target?.personaStyle??'default');
   }
-  for(const row of $('targets').children) row.lastChild.disabled=busy||hasDraft;
+  for(const row of $('targets').children) {const last=[...row.children].reverse().find(node=>node.tagName==='BUTTON'); if(last) last.disabled=busy||hasDraft;}
   renderContacts();
 }
 function renderRuntimeRecords() {
@@ -516,7 +530,7 @@ for(const action of ['start','save','once']) $(action).addEventListener('click',
     await act({action:'start',singleReply:action==='once',durationMinutes:Number($('duration').value)});
     return;
   }
-  const numeric=['daily','cooldown','sendDaily','chatDaily','globalInterval','maxCharacters','stickerIntervalSeconds','stickerEveryReplies','stickerRepeatHours','memoryMessages','memoryCharacters','memoryMinutes','memoryBudget','groupParticipationEvery','workStart','workEnd'];
+  const numeric=['daily','cooldown','sendDaily','chatDaily','globalInterval','maxCharacters','stickerIntervalSeconds','stickerEveryReplies','stickerRepeatHours','memoryMessages','memoryCharacters','memoryMinutes','memoryBudget','memoryLimit','memoryCompress','memorySuper','groupParticipationEvery','workStart','workEnd'];
   if(!validateNumericInputs(numeric)) return;
   const ai=structuredClone(state.config.ai);
   ai.model=$('model').value.trim();ai.prompt=$('prompt').value;
@@ -525,7 +539,7 @@ for(const action of ['start','save','once']) $(action).addEventListener('click',
   ai.dailyLimit=Number($('daily').value);ai.cooldownSeconds=Number($('cooldown').value);
   ai.sendLimits={...(ai.sendLimits ?? {globalIntervalSeconds:3}),globalIntervalSeconds:Number($('globalInterval').value),daily:Number($('sendDaily').value),perChatDaily:Number($('chatDaily').value)};
   const persona={style:$('personaStyle').value,customName:$('customPersonaName').value,customPrompt:$('customPersonaPrompt').value,maxCharacters:Number($('maxCharacters').value),banter:Number($('banter').value),stickersEnabled:$('stickersEnabled').checked,stickerIntervalSeconds:Number($('stickerIntervalSeconds').value),stickerEveryReplies:Number($('stickerEveryReplies').value),stickerTrigger:$('stickerTrigger').value,stickerEmotions:[...$('stickerEmotions').selectedOptions].map(o=>o.value),stickerKeywords:$('stickerKeywords').value.split('\n').map(s=>s.trim()).filter(Boolean),stickerRepeatHours:Number($('stickerRepeatHours').value)};
-  const success=await act({action:'save',persona,senderPersonas:senderPersonaDrafts(),groupParticipationEnabled:$('groupParticipationEnabled').checked,groupParticipationEvery:Number($('groupParticipationEvery').value),onlineEnabled:$('onlineEnabled').checked,visionEnabled:$('visionEnabled').checked,memoryEnabled:$('memoryEnabled').checked,memoryOptions:{messageThreshold:Number($('memoryMessages').value),characterThreshold:Number($('memoryCharacters').value),intervalMinutes:Number($('memoryMinutes').value),retrievalCharacters:Number($('memoryBudget').value)},enabled:[...$('targets').querySelectorAll('input:checked')].map(c=>c.dataset.target),ai});
+  const success=await act({action:'save',persona,senderPersonas:senderPersonaDrafts(),groupParticipationEnabled:$('groupParticipationEnabled').checked,groupParticipationEvery:Number($('groupParticipationEvery').value),onlineEnabled:$('onlineEnabled').checked,visionEnabled:$('visionEnabled').checked,memoryEnabled:$('memoryEnabled').checked,memoryOptions:{messageThreshold:Number($('memoryMessages').value),characterThreshold:Number($('memoryCharacters').value),intervalMinutes:Number($('memoryMinutes').value),retrievalCharacters:Number($('memoryBudget').value),storeLimitMB:Number($('memoryLimit').value),compressEvery:Number($('memoryCompress').value),superDailyLearns:Number($('memorySuper').value)},enabled:[...$('targets').querySelectorAll('input:checked')].map(c=>c.dataset.target),ai});
   if(success) {
     targetDraft.clear();
   }

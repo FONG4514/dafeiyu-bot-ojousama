@@ -38,10 +38,10 @@ let excludedTests = ["onebot_fixture.py", "synthetic-images.json"]
 // SwiftPM's Windows test runner must link the engine without an executable main.
 // The distributable executable is built separately by scripts/build-qq.py.
 let appProducts: [Product] = []
-let appTarget: Target = .target(name: "WeChatAIBot", dependencies: [.target(name: "BotCore")] + crypto + transport, exclude: desktopFiles, swiftSettings: settings)
+let appTarget: Target = .target(name: "WeChatAIBot", dependencies: [.target(name: "BotCore"), .target(name: "CSQLite")] + crypto + transport, exclude: desktopFiles, swiftSettings: settings)
 #else
 let appProducts: [Product] = [.executable(name: "WeChatAIBot", targets: ["WeChatAIBot"])]
-let appTarget: Target = .executableTarget(name: "WeChatAIBot", dependencies: [.target(name: "BotCore")] + crypto + transport, exclude: desktopFiles, swiftSettings: settings)
+let appTarget: Target = .executableTarget(name: "WeChatAIBot", dependencies: [.target(name: "BotCore"), .target(name: "CSQLite")] + crypto + transport, exclude: desktopFiles, swiftSettings: settings)
 #endif
 
 let package = Package(
@@ -50,6 +50,11 @@ let package = Package(
     products: appProducts,
     dependencies: dependencies,
     targets: [
+        .target(name: "CSQLite", path: "Sources/CSQLite", exclude: ["README.md"], publicHeadersPath: "include", cSettings: [
+            .define("SQLITE_THREADSAFE", to: "2"), .define("SQLITE_OMIT_LOAD_EXTENSION", to: "1"),
+            .define("SQLITE_DEFAULT_MEMSTATUS", to: "0"), .define("SQLITE_DQS", to: "0"),
+            .define("SQLITE_DEFAULT_FOREIGN_KEYS", to: "1")
+        ]),
         .target(name: "BotCore", dependencies: crypto),
         appTarget,
         .testTarget(name: "BotCoreTests", dependencies: ["BotCore"]),

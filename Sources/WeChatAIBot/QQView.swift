@@ -433,11 +433,12 @@ struct QQView: View {
                 }.padding(8).disabled(engine.running || engine.busy || engine.runtimeBusy)
             } label: { HStack { Text("记忆设置"); HelpHint("每群、每好友独立保存，群内保留说话人。按消息数、字符数或时间整理，暂停保留待整理片段；后台整理占模型额度。") } }
             DisclosureGroup("已保存的会话记忆") {
-                ForEach(engine.memoryBooks.keys.filter { $0.hasPrefix(engine.config.expectedSelfID + ":") }.sorted(), id: \.self) { key in
-                    if let book = engine.memoryBooks[key] {
-                        Text("\(key)：\(book.items.filter { $0.current(Date()) }.count) 项记忆，\(book.pending.count) 条待整理，容量丢弃 \(book.droppedEvents) 条")
-                        ForEach(book.items.filter { $0.current(Date()) }.suffix(32)) { item in Text("[\(item.subject)·\(item.kind)] \(item.text)").textSelection(.enabled) }
-                    }
+                let panels = engine.memoryPanels()
+                if panels.isEmpty { Text("尚无会话记忆") }
+                ForEach(panels.indices, id: \.self) { index in
+                    let row = panels[index]
+                    Text("\(row["key"] as? String ?? "")：\(row["items"] as? Int ?? 0) 项记忆，\(row["pending"] as? Int ?? 0) 条待整理")
+                    Text(row["summary"] as? String ?? "").textSelection(.enabled)
                 }
             }
             if !engine.preview.isEmpty { GroupBox("本次回复预览（不落盘）") { Text(engine.preview).frame(maxWidth: .infinity, alignment: .leading).textSelection(.enabled) } }

@@ -22,6 +22,9 @@ core = package / 'Sources' / 'BotCore'
 if core.exists():
     shutil.rmtree(core)
 shutil.copytree(root / 'Sources' / 'BotCore', core)
+sqlite = package / 'Sources' / 'CSQLite'
+if sqlite.exists(): shutil.rmtree(sqlite)
+shutil.copytree(root / 'Sources' / 'CSQLite', sqlite)
 for name in sources:
     if pathlib.PurePath(name).name != name or not name.endswith('.swift'):
         raise SystemExit('Invalid QQ source manifest')
@@ -45,8 +48,9 @@ let crypto: [Target.Dependency] = []
 let platform: [Target.Dependency] = []
 #endif
 let package = Package(name:"DaFeiYuQQ",platforms:[.macOS(.v14)],products:[.executable(name:"dafeiyu-qq",targets:["QQWorker"])],dependencies:dependencies,targets:[
+ .target(name:"CSQLite",path:"Sources/CSQLite",exclude:["README.md"],publicHeadersPath:"include",cSettings:[.define("SQLITE_THREADSAFE",to:"2"),.define("SQLITE_OMIT_LOAD_EXTENSION",to:"1"),.define("SQLITE_DEFAULT_MEMSTATUS",to:"0"),.define("SQLITE_DQS",to:"0"),.define("SQLITE_DEFAULT_FOREIGN_KEYS",to:"1")]),
  .target(name:"BotCore",dependencies:crypto),
- .executableTarget(name:"QQWorker",dependencies:[.target(name:"BotCore")]+platform,swiftSettings:[.define("DAFEIYU_QQ_ONLY")])])
+ .executableTarget(name:"QQWorker",dependencies:[.target(name:"BotCore"),.target(name:"CSQLite")]+platform,swiftSettings:[.define("DAFEIYU_QQ_ONLY")])])
 ''', encoding='utf-8')
 if args.prepare_only:
     print(package)
