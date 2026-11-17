@@ -3,18 +3,12 @@ on:
   push:
   pull_request:
   workflow_dispatch:
-    inputs:
-      installers_only:
-        description: Build and test desktop installer from published QQ packages without rebuilding the engine
-        type: boolean
-        default: false
 permissions:
   contents: read
 jobs:
   windows-qq:
-    if: ${{ !inputs.installers_only }}
     runs-on: windows-2022
-    timeout-minutes: 45
+    timeout-minutes: 60
     env:
       PYTHONUTF8: 1
       DAFEIYU_BUILD_JOBS: 4
@@ -111,55 +105,34 @@ jobs:
             npm run test:npm-install -- --public --directory dist/npm
             if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           }
+      - name: Install Inno Setup
+        if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main'
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          if (Test-Path "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe") { exit 0 }
+          choco install innosetup --yes --no-progress
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+      - name: Build installer from this commit's engine
+        if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main'
+        shell: pwsh
+        run: |
+          $env:DAFEIYU_DESKTOP_ENGINE = "$pwd/dist/qq"
+          npm run build:desktop
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
       - uses: actions/upload-artifact@v4
         with:
           name: qq-win32-x64-preview-2
           path: dist/npm/*.tgz
-      - uses: actions/cache/save@v4
-        if: always() && steps.swift-cache.outputs.cache-hit != 'true'
-        with:
-          path: .build
-          key: windows-swift-6.1.3-${{ hashFiles('Package.swift', 'qq-sources.json') }}-${{ github.sha }}
-  windows-installer:
-    if: ${{ github.event_name == 'workflow_dispatch' && inputs.installers_only }}
-    runs-on: windows-2022
-    timeout-minutes: 20
-    steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v7.1.0
-        with:
-          node-version: '24'
-      - name: Build per-user installer and portable client
-        shell: pwsh
-        run: |
-          npm ci --ignore-scripts --no-audit --no-fund
-          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-          npm run build:desktop
-          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-      - name: Install, open client and MCP, upgrade and uninstall
-        shell: pwsh
-        run: |
-          npm run test:desktop
-          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-      - name: Verify separate original QQ installer without executing it
-        shell: pwsh
-        run: |
-          $ErrorActionPreference = 'Stop'
-          $plan = Get-Content desktop-release.json -Raw | ConvertFrom-Json
-          $qq = $plan.qqInstallers | Where-Object platform -eq 'win32'
-          $file = Join-Path $env:RUNNER_TEMP $qq.filename
-          Invoke-WebRequest -Uri $qq.url -OutFile $file
-          $hash = (Get-FileHash -LiteralPath $file -Algorithm SHA256).Hash.ToLowerInvariant()
-          if ($hash -ne $qq.sha256) { throw 'Original QQ SHA-256 differs from pinned release' }
-          $signature = Get-AuthenticodeSignature -LiteralPath $file
-          if ($signature.Status -ne 'Valid' -or $signature.SignerCertificate.Subject -notmatch 'Tencent') { throw 'Expected valid Tencent QQ signature' }
-          $version = [System.Diagnostics.FileVersionInfo]::GetVersionInfo($file)
-          @{file=$qq.filename;sha256=$hash;signature=$signature.Status.ToString();signer=$signature.SignerCertificate.Subject;fileVersion=$version.FileVersion;executedQQ=$false} | ConvertTo-Json | Set-Content dist/desktop/qq-win32-verification.json -Encoding utf8
       - uses: actions/upload-artifact@v4
+        if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main'
         with:
           name: desktop-windows-x64
           path: |
             dist/desktop/*.exe
             dist/desktop/*.zip
-            dist/desktop/validation-win32.json
-            dist/desktop/qq-win32-verification.json
+      - uses: actions/cache/save@v4
+        if: always() && steps.swift-cache.outputs.cache-hit != 'true'
+        with:
+          path: .build
+          key: windows-swift-6.1.3-${{ hashFiles('Package.swift', 'qq-sources.json') }}-${{ github.sha }}

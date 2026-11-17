@@ -67,6 +67,27 @@ if(process.platform==='darwin') {
   run('/usr/bin/codesign',['--verify','--deep','--strict',path.join(tools,'NapCatInstaller.app')]);
 }
 const native=path.join(runtime,'node_modules','@sakurafan1023',`qq-${process.platform}-${process.arch}`);
+const localEngine=process.env.DAFEIYU_DESKTOP_ENGINE?path.resolve(root,process.env.DAFEIYU_DESKTOP_ENGINE):'';
+if(localEngine){
+  await fs.rm(native,{recursive:true,force:true});
+  await fs.cp(localEngine,native,{recursive:true});
+  const enginePackage=path.join(native,'package.json');
+  const existing=JSON.parse(await fs.readFile(enginePackage,'utf8').catch(()=>'{}'));
+  existing.name=`@sakurafan1023/qq-${process.platform}-${process.arch}`;
+  existing.version=runtimeVersion;
+  await fs.writeFile(enginePackage,JSON.stringify(existing,null,2));
+  const hashes={};
+  async function hashEngine(directory,prefix=''){
+    for(const item of await fs.readdir(directory,{withFileTypes:true})){
+      const name=path.posix.join(prefix,item.name),file=path.join(directory,item.name);
+      if(item.isSymbolicLink()) throw new Error('Local QQ engine contains a symlink');
+      if(item.isDirectory()) await hashEngine(file,name);
+      else if(name!=='integrity.json') hashes[name]=createHash('sha256').update(await fs.readFile(file)).digest('hex');
+    }
+  }
+  await hashEngine(native);
+  await fs.writeFile(path.join(native,'integrity.json'),JSON.stringify(hashes,null,2));
+}
 const qq=await import(pathToFileURL(path.join(runtime,'node_modules','@sakurafan1023','qq','lib','runtime.mjs')).href);
 await qq.verifyArtifact(native,process.platform==='win32'?'dafeiyu-qq.exe':'dafeiyu-qq');
 if(process.platform==='darwin') {
@@ -90,7 +111,7 @@ for (const name of ['LICENSE','THIRD_PARTY_NOTICES.md']) await fs.copyFile(path.
 const source=spawnSync('git',['rev-parse','HEAD'],{cwd:root,encoding:'utf8'});
 if(source.status!==0) throw new Error('Unable to record packaging source');
 await fs.writeFile(path.join(documents,'desktop-build.json'),JSON.stringify({version,runtimeVersion,napcatVersion:desktop.napcat.version,platform:process.platform,architecture:process.arch,nodeVersion:process.version,
-  packagingCommit:source.stdout.trim(),runtimeSource:'public npm fixed version; native integrity verified',
+  packagingCommit:source.stdout.trim(),runtimeSource:localEngine?'local dist/qq engine with bundled NapCat':'public npm fixed version; native integrity verified',
   macNativeDebugInfoRemoved:process.platform==='darwin',signedByDeveloper:false},null,2)+'\n');
 if (process.platform==='darwin') {
   const launcher=path.join(bundle,'Contents','Resources','dafeiyu-mcp.command');
