@@ -1,0 +1,2 @@
+Sources/CSQLite/sqlite3.c text eol=lf linguist-vendored
+Sources/CSQLite/include/sqlite3.h text eol=lf linguist-vendored

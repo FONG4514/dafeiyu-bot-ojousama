@@ -42,7 +42,7 @@ for p in paths:
         'Sources/CSQLite/sqlite3.c': 'a891421dc9eb944bfa696458fa55e2676d6187378632563126b0d98c34c7ad07',
         'Sources/CSQLite/include/sqlite3.h': '2198c66d4c59ae86421590c27fd53309ec14a595ae31c0c7143247444018a0bd',
     }.get(rel.as_posix())
-    if official_sqlite and hashlib.sha256(data).hexdigest() == official_sqlite: continue
+    if official_sqlite and hashlib.sha256(data.replace(b'\r\n', b'\n')).hexdigest() == official_sqlite: continue
     try: text=data.decode('utf-8')
     except UnicodeDecodeError: failures.append((str(rel),0,'unreviewed binary'));continue
     # Preserve the public copyright contact in the byte-pinned official ICU license.
