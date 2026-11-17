@@ -28,7 +28,7 @@ async function bundledAsset(item) {
   const existing=await fs.readFile(cache).catch(error=>{if(error.code==='ENOENT')return null;throw error;});
   if(existing&&matches(existing)) return cache;
   const response=await fetch(item.url,{signal:AbortSignal.timeout(120000)});
-  if(!response.ok) throw new Error('Official NapCat archive download failed');
+  if(!response.ok) throw new Error(`Official NapCat archive download failed: ${response.status} ${item.url}`);
   let size=0;const parts=[];
   for await(const chunk of response.body){size+=chunk.length;if(size>128*1024*1024)throw new Error('NapCat archive exceeds limit');parts.push(chunk);}
   const bytes=Buffer.concat(parts);if(!matches(bytes))throw new Error('Official NapCat archive SHA-256 differs from pinned release');
