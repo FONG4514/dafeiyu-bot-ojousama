@@ -27,7 +27,7 @@ async function bundledAsset(item) {
   const matches=bytes=>createHash('sha256').update(bytes).digest('hex')===item.sha256;
   const existing=await fs.readFile(cache).catch(error=>{if(error.code==='ENOENT')return null;throw error;});
   if(existing&&matches(existing)) return cache;
-  const response=await fetch(item.url,{signal:AbortSignal.timeout(120000)});
+  const response=await fetch(item.url,{signal:AbortSignal.timeout(120000),headers:{'User-Agent':'dafeiyu-desktop-build'}});
   if(!response.ok) throw new Error(`Official NapCat archive download failed: ${response.status} ${item.url}`);
   let size=0;const parts=[];
   for await(const chunk of response.body){size+=chunk.length;if(size>128*1024*1024)throw new Error('NapCat archive exceeds limit');parts.push(chunk);}
@@ -138,7 +138,8 @@ if (process.platform==='darwin') {
   await fs.copyFile(path.join(root,'scripts','windows-launch.cmd'), path.join(bundle,'大肥鱼一键启动.cmd'));
   await fs.writeFile(path.join(bundle,'Open NapCat.cmd'),'@echo off\r\n"%~dp0DaFeiYu.exe" --napcat\r\n');
   const compiler=path.join(process.env['ProgramFiles(x86)'],'Inno Setup 6','ISCC.exe');
-  run(compiler,[`/DBundleDir=${bundle}`,`/DOutputDir=${output}`,`/DAppVersion=${version}`,path.join(root,'scripts','windows-installer.iss')]);
+  const iss=value=>value.replaceAll('\\','/');
+  run(compiler,[`/DBundleDir=${iss(bundle)}`,`/DOutputDir=${iss(output)}`,`/DAppVersion=${version}`,iss(path.join(root,'scripts','windows-installer.iss'))]);
   const archive=path.join(output,`DaFeiYu-${version}-windows-x64-portable.zip`);await fs.rm(archive,{force:true});
   run('tar.exe',['-a','-cf',path.relative(work,archive),'DaFeiYu'],{cwd:work});
   console.log('Desktop installer and portable ZIP: '+output);
