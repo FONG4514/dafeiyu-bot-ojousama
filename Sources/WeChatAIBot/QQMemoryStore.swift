@@ -200,12 +200,19 @@ final class QQMemoryStore: @unchecked Sendable {
             let temporary = file.appendingPathExtension("tmp")
             if FileManager.default.fileExists(atPath: temporary.path) { try FileManager.default.removeItem(at: temporary) }
             var disk: OpaquePointer?
-            guard sqlite3_open_v2(temporary.path, &disk, SQLITE_OPEN_READWRITE | SQLITE_OPEN_CREATE, nil) == SQLITE_OK, let disk, let db else {
+            guard sqlite3_open_v2(temporary.path, &disk, SQLITE_OPEN_READWRITE | SQLITE_OPEN_CREATE, nil) == SQLITE_OK, let opened = disk, let db else {
+                if let disk { sqlite3_close(disk) }
                 throw AppFailure.message("记忆快照无法创建")
             }
-            defer { sqlite3_close(disk) }
-            try copy(from: db, to: disk)
-            try exec(on: disk, "PRAGMA wal_checkpoint(FULL)")
+            do {
+                try copy(from: db, to: opened)
+                try exec(on: opened, "PRAGMA wal_checkpoint(TRUNCATE)")
+            } catch {
+                sqlite3_close(opened)
+                throw error
+            }
+            // Windows cannot replace a file that still has a SQLite handle open.
+            sqlite3_close(opened)
             let handle = try FileHandle(forWritingTo: temporary)
             try handle.synchronize(); try handle.close()
             try replacePrivateFile(at: file, with: temporary)

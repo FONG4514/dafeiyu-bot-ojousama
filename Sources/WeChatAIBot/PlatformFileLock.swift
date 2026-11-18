@@ -81,7 +81,7 @@ func protectPrivateFile(_ file: URL) throws {
 func replacePrivateFile(at destination: URL, with temporary: URL) throws {
     try protectPrivateFile(temporary)
     #if os(Windows)
-    let deadline = DispatchTime.now() + .seconds(1)
+    let deadline = DispatchTime.now() + .seconds(5)
     while true {
         let result = temporary.path.withCString(encodedAs: UTF16.self) { source in
             destination.path.withCString(encodedAs: UTF16.self) { target in
