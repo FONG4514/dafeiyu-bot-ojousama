@@ -18,8 +18,11 @@ const documents=process.platform==='darwin'?path.join(bundle,'Contents','Resourc
 const npm=process.env.npm_execpath;
 if (!npm) throw new Error('Run npm run build:desktop');
 function run(command,args,options={}) {
-  const result=spawnSync(command,args,{cwd:root,stdio:'inherit',...options});
-  if (result.error || result.status!==0) throw new Error('Desktop build failed: '+path.basename(command));
+  const result=spawnSync(command,args,{cwd:root,encoding:'utf8',...options,stdio:['inherit','inherit','pipe']});
+  if (result.error || result.status!==0) {
+    const detail=String(result.stderr||result.error?.message||'').trim();
+    throw new Error('Desktop build failed: '+path.basename(String(command))+(detail?'\n'+detail:''));
+  }
   return result;
 }
 async function bundledAsset(item) {
