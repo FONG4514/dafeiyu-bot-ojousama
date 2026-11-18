@@ -141,7 +141,9 @@ if (process.platform==='darwin') {
   const iss=value=>value.replaceAll('\\','/');
   run(compiler,[`/DBundleDir=${iss(bundle)}`,`/DOutputDir=${iss(output)}`,`/DAppVersion=${version}`,iss(path.join(root,'scripts','windows-installer.iss'))]);
   const archive=path.join(output,`DaFeiYu-${version}-windows-x64-portable.zip`);await fs.rm(archive,{force:true});
-  // System tar writes zip from the extension. A relative ..\ path is rejected, and Git's tar.exe does not write zip files.
-  run(path.join(process.env.SystemRoot,'System32','tar.exe'),['-a','-cf',archive.replaceAll('\\','/'),'DaFeiYu'],{cwd:work});
+  // tar.exe cannot store the Chinese launcher name; .NET writes UTF-8 entry names. Paths travel in the environment.
+  run(path.join(process.env.SystemRoot,'System32','WindowsPowerShell','v1.0','powershell.exe'),['-NoProfile','-NonInteractive','-Command',
+    'Add-Type -AssemblyName System.IO.Compression.FileSystem; [System.IO.Compression.ZipFile]::CreateFromDirectory($env:DAFEIYU_ZIP_SOURCE,$env:DAFEIYU_ZIP_TARGET,[System.IO.Compression.CompressionLevel]::Optimal,$true,[System.Text.Encoding]::UTF8)'],
+    {env:{...process.env,DAFEIYU_ZIP_SOURCE:bundle,DAFEIYU_ZIP_TARGET:archive}});
   console.log('Desktop installer and portable ZIP: '+output);
 }
