@@ -141,6 +141,7 @@ if (process.platform==='darwin') {
   const iss=value=>value.replaceAll('\\','/');
   run(compiler,[`/DBundleDir=${iss(bundle)}`,`/DOutputDir=${iss(output)}`,`/DAppVersion=${version}`,iss(path.join(root,'scripts','windows-installer.iss'))]);
   const archive=path.join(output,`DaFeiYu-${version}-windows-x64-portable.zip`);await fs.rm(archive,{force:true});
-  run('tar.exe',['-a','-cf',path.relative(work,archive),'DaFeiYu'],{cwd:work});
+  // System tar writes zip from the extension. A relative ..\ path is rejected, and Git's tar.exe does not write zip files.
+  run(path.join(process.env.SystemRoot,'System32','tar.exe'),['-a','-cf',archive.replaceAll('\\','/'),'DaFeiYu'],{cwd:work});
   console.log('Desktop installer and portable ZIP: '+output);
 }
