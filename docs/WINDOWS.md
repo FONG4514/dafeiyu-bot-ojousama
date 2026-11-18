@@ -130,7 +130,7 @@ bash scripts/start-linux.sh
 
 Windows/Linux 版凭证仅在进程内保存，重新启动必须重新输入；生图/识图的“保存到钥匙串”选项自动禁用。聊天配置、计数和会话记忆保存在 WSL 的 `~/.local/share/dafeiyu`，目录 0700、文件 0600。此目录包含私人数据，不提交到 Git。
 
-安装目录和便携版里的 `大肥鱼一键启动.cmd` 会准备内置 NapCat、在 3001 端口没监听时启动它，再打开控制面板。它不会自动开始回复，凭证仍要在面板里填写。Windows 10 使用 `launcher-win10-user.bat`，更新的系统使用 `launcher-user.bat`。
+安装目录和便携版里的 `大肥鱼一键启动.cmd` 与 `Start-DaFeiYu.cmd` 是同一份脚本：准备内置 NapCat、在 3001 端口没监听时启动它，再打开控制面板。它不会自动开始回复，凭证仍要在面板里填写。Windows 10 使用 `launcher-win10-user.bat`，更新的系统使用 `launcher-user.bat`。
 
 可从 PowerShell 启动已装好的版本：
 

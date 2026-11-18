@@ -138,7 +138,9 @@ if (process.platform==='darwin') {
   const csc=path.join(process.env.SystemRoot,'Microsoft.NET','Framework64','v4.0.30319','csc.exe');
   run(csc,['/nologo','/codepage:65001','/target:winexe','/reference:System.Windows.Forms.dll',`/out:${path.join(bundle,'DaFeiYu.exe')}`,path.join(root,'scripts','windows-client.cs')]);
   await fs.writeFile(path.join(bundle,'Stop DaFeiYu.cmd'),'@echo off\r\n"%~dp0runtime\\node.exe" "%~dp0runtime\\launch.mjs" disconnect\r\nif errorlevel 1 exit /b 1\r\n"%~dp0runtime\\node.exe" "%~dp0runtime\\launch.mjs" stop\r\n');
-  await fs.copyFile(path.join(root,'scripts','windows-launch.cmd'), path.join(bundle,'大肥鱼一键启动.cmd'));
+  const launcher=path.join(root,'scripts','windows-launch.cmd');
+  await fs.copyFile(launcher, path.join(bundle,'大肥鱼一键启动.cmd'));
+  await fs.copyFile(launcher, path.join(bundle,'Start-DaFeiYu.cmd'));
   await fs.writeFile(path.join(bundle,'Open NapCat.cmd'),'@echo off\r\n"%~dp0DaFeiYu.exe" --napcat\r\n');
   const compiler=path.join(process.env['ProgramFiles(x86)'],'Inno Setup 6','ISCC.exe');
   const iss=value=>value.replaceAll('\\','/');
