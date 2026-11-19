@@ -17,11 +17,13 @@ struct QQView: View {
     private func saveReplyDraft() {
         guard !editor.replyDraft.conflicts(with: QQReplyForm(engine.config)) else { engine.error = "范围或回复配置已在别处更新，请先载入最新设置"; return }
         let value = editor.replyDraft.value
+        let ignored = Dictionary(uniqueKeysWithValues: value.targets.filter(\.group).map { ($0.key, $0.effectiveIgnoredSenders) })
         do {
             engine.saveReplySettings(ai: try value.validatedAI(), persona: value.persona, onlineEnabled: value.onlineEnabled,
                 visionEnabled: value.visionEnabled, memoryEnabled: value.memoryEnabled,
                 groupParticipationEnabled: value.groupParticipationEnabled, groupParticipationEvery: value.groupParticipationEvery,
-                memoryOptions: value.memoryOptions, enabledTargets: Set(value.targets.filter(\.enabled).map(\.key)))
+                memoryOptions: value.memoryOptions, enabledTargets: Set(value.targets.filter(\.enabled).map(\.key)),
+                senderRules: value.senderRules, ignoredSenders: ignored)
             if engine.error == nil { editor.replyDraft.reset(QQReplyForm(engine.config)) }
         } catch { engine.error = error.localizedDescription }
     }
@@ -303,7 +305,7 @@ struct QQView: View {
                     if engine.visualStatus != "尚未调用外置识图或搜图" { Text(engine.visualStatus).font(.callout) }
                     QQPanelOperationError(message: engine.error)
                 }.padding(8).disabled(engine.running || engine.busy || engine.runtimeBusy)
-            } label: { HStack { Text("识图与 Google 以图搜图"); HelpHint("智谱复用生图 Key。动图最多抽取 6 帧，每轮最多 12 帧，不保存原图。Google 还需启用识图和联网，只返回文字与来源，超免费额度可能计费。") } }
+            } label: { HStack { Text("识图与 Google 以图搜图"); HelpHint("使用当前会话模型的原生多模态识图（DeepSeek 有图回合使用 deepseek-flash）。动图最多抽取 6 帧，每轮最多 12 帧，不保存原图。Google 还需启用识图和联网，只返回文字与来源，超免费额度可能计费。") } }
             }
             }
             if editor.section == "范围与回复" {
@@ -361,16 +363,35 @@ struct QQView: View {
                 } label: { HStack { Text("人设与表情"); HelpHint("性格按会话独立覆盖。配图结合语境，无合适图不硬配；配图间隔为 0 时仅考虑强烈情绪。") } }
                     .disabled(engine.running || engine.busy || engine.runtimeBusy)
                 GroupBox {
-                    HStack(alignment: .center, spacing: 24) {
-                        Toggle("启用主动接话", isOn: $editor.replyDraft.value.groupParticipationEnabled)
-                            .frame(maxWidth: .infinity, alignment: .leading)
-                        PanelNumberField("主动接话触发条数", value: $editor.replyDraft.value.groupParticipationEvery, in: 1...1000, unit: "条")
-                            .frame(maxWidth: .infinity)
+                    VStack(alignment: .leading, spacing: 12) {
+                        HStack(alignment: .center, spacing: 24) {
+                            Toggle("启用主动接话", isOn: $editor.replyDraft.value.groupParticipationEnabled)
+                                .frame(maxWidth: .infinity, alignment: .leading)
+                            PanelNumberField("主动接话触发条数", value: $editor.replyDraft.value.groupParticipationEvery, in: 1...1000, unit: "条")
+                                .frame(maxWidth: .infinity)
+                        }
+                        ForEach($editor.replyDraft.value.targets) { $target in
+                            if target.group {
+                                VStack(alignment: .leading, spacing: 4) {
+                                    if target.enabled {
+                                        Text("\(target.name)：\(engine.groupMessageCounts[target.key, default: 0]) / \(editor.replyDraft.value.groupParticipationEvery) 条").font(.caption)
+                                    }
+                                    TextField("群 \(target.name) 不接话的 QQ 号（逗号分隔，来源过滤）", text: Binding(get: { target.effectiveIgnoredSenders.joined(separator: "，") }, set: { value in
+                                        target.effectiveIgnoredSenders = value.components(separatedBy: CharacterSet(charactersIn: ",， \n")).filter { !$0.isEmpty }
+                                    }))
+                                }
+                            }
+                        }
+                        DisclosureGroup("提示词查看（人设态度隔离与动态裁剪段落）") {
+                            VStack(alignment: .leading, spacing: 8) {
+                                ForEach(engine.promptSections(), id: \.self) { section in
+                                    Text(section["title"] ?? "").font(.caption.bold())
+                                    Text(section["content"] ?? "").font(.caption).textSelection(.enabled)
+                                }
+                            }.padding(.top, 6)
+                        }
                     }
-                    ForEach(engine.config.targets.filter { $0.enabled && $0.group }) { target in
-                        Text("\(target.name)：\(engine.groupMessageCounts[target.key, default: 0]) / \(editor.replyDraft.value.groupParticipationEvery) 条").font(.caption)
-                    }
-                } label: { HStack { Text("群聊主动接话"); HelpHint("每群独立计数，包含主人手动发言，@ 不重置计数。达到条数只评估是否接话，可以选择保持安静。") } }
+                } label: { HStack { Text("群聊主动接话与来源过滤"); HelpHint("每群独立计数，包含主人手动发言，@ 不重置计数。填写不接话的 QQ 号可过滤其他机器人，在计数和入队前生效。") } }
                     .disabled(engine.running || engine.busy || engine.runtimeBusy)
                 GroupBox {
                     VStack(alignment: .leading, spacing: 20) {

@@ -229,18 +229,26 @@ import BotCore
                     if let ai = request.ai { updated.ai = ai }
                     if let persona = request.persona { updated.persona = persona }
                     if let senderPersonas = request.senderPersonas { updated.senderPersonas = senderPersonas }
+                    if let senderRules = request.senderRules { updated.senderRules = senderRules }
+                    if let ignoredSenders = request.ignoredSenders {
+                        for index in updated.targets.indices where updated.targets[index].group {
+                            if let list = ignoredSenders[updated.targets[index].key] {
+                                updated.targets[index].effectiveIgnoredSenders = list
+                            }
+                        }
+                    }
                     if let onlineEnabled = request.onlineEnabled { updated.onlineEnabled = onlineEnabled }
                     if let visionEnabled = request.visionEnabled { updated.visionEnabled = visionEnabled }
                     if let memoryEnabled = request.memoryEnabled { updated.memoryEnabled = memoryEnabled }
                     if let options = request.memoryOptions { updated.memoryOptions = options }
                     if let value = request.groupParticipationEnabled { updated.groupParticipationEnabled = value }
                     if let value = request.groupParticipationEvery { updated.groupParticipationEvery = value }
-                    try updated.validate(); engine.saveReplySettings(ai: updated.ai, persona: updated.effectivePersona, onlineEnabled: updated.effectiveOnlineEnabled, visionEnabled: updated.effectiveVisionEnabled, memoryEnabled: updated.effectiveMemoryEnabled, groupParticipationEnabled: updated.effectiveGroupParticipationEnabled, groupParticipationEvery: updated.effectiveGroupParticipationEvery, memoryOptions: updated.effectiveMemoryOptions, enabledTargets: request.enabled.map { Set($0) }, senderPersonas: request.senderPersonas)
+                    try updated.validate(); engine.saveReplySettings(ai: updated.ai, persona: updated.effectivePersona, onlineEnabled: updated.effectiveOnlineEnabled, visionEnabled: updated.effectiveVisionEnabled, memoryEnabled: updated.effectiveMemoryEnabled, groupParticipationEnabled: updated.effectiveGroupParticipationEnabled, groupParticipationEvery: updated.effectiveGroupParticipationEvery, memoryOptions: updated.effectiveMemoryOptions, enabledTargets: request.enabled.map { Set($0) }, senderPersonas: request.senderPersonas, senderRules: request.senderRules, ignoredSenders: request.ignoredSenders)
                 case "start":
                     guard engine.connected, !engine.running, !engine.busy, !engine.runtimeBusy else { throw AppFailure.message("请先连接或暂停") }
                     let duration = request.singleReply == true ? 15 : (request.durationMinutes ?? 120)
                     guard (0...4320).contains(duration) else { throw AppFailure.message("运行时长必须为 0 至 4320 分钟") }
-                    guard request.ai == nil, request.persona == nil, request.senderPersonas == nil, request.enabled == nil,
+                    guard request.ai == nil, request.persona == nil, request.senderPersonas == nil, request.senderRules == nil, request.ignoredSenders == nil, request.enabled == nil,
                           request.onlineEnabled == nil, request.visionEnabled == nil, request.memoryEnabled == nil,
                           request.memoryOptions == nil, request.groupParticipationEnabled == nil, request.groupParticipationEvery == nil else {
                         throw AppFailure.message("开始回复只使用已保存配置，请先单独保存范围与回复设置")
@@ -279,6 +287,7 @@ import BotCore
                 "memories": engine.memoryPanels().map { row in var labeled = row; labeled["scope"] = row["key"] ?? ""; labeled["key"] = memoryLabel(row["key"] as? String ?? ""); return labeled },
                 "personalities": QQPersonality.allCases.map { ["id": $0.rawValue, "name": $0.name, "description": $0.description] },
                 "persona": try JSONSerialization.jsonObject(with: JSONEncoder().encode(engine.config.effectivePersona)),
+                "promptSections": engine.promptSections(),
                 "stickers": engine.stickerLibrary.items.map { ["id": $0.id, "title": $0.title, "source": $0.source, "context": $0.context ?? "", "emotion": $0.emotion.rawValue, "author": $0.author ?? "", "license": $0.license ?? "", "local": $0.id.hasPrefix("local-"), "publicSharing": $0.publicSharing ?? false] as [String: Any] },
                 "runDeadline": engine.runDeadline.map { $0.timeIntervalSince1970 as Any } ?? NSNull(),
                 "calls": engine.usage.calls, "attempts": engine.sends.attempts, "confirmed": engine.sends.confirmed,
@@ -323,6 +332,8 @@ import BotCore
         var ai: BotConfig?
         var persona: QQPersona?
         var senderPersonas: [QQSenderPersona]?
+        var senderRules: [QQSenderRule]?
+        var ignoredSenders: [String: [String]]?
         var personaStyle: String?
         var memoryMode: String?
         var memoryItem: String?

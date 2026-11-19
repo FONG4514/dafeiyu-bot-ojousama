@@ -21,7 +21,7 @@ import BotCore
         let engine = QQEngine(allowAuthenticationUI: false, storageDirectory: directory)
         engine.save(expectedSelfID: "12345")
         try #require(engine.error == nil, "\(engine.error ?? "")")
-        var visual = QQVisualConfig(); visual.provider = .zhipu; visual.googleWebEnabled = true
+        var visual = QQVisualConfig(); visual.provider = .deepseek; visual.googleWebEnabled = true
         engine.saveVisualTools(visual, googleKey: "synthetic-google", persistCredentials: false)
         try #require(engine.error == nil, "\(engine.error ?? "")")
         engine.config.effectiveVisionEnabled = true; engine.config.effectiveOnlineEnabled = true

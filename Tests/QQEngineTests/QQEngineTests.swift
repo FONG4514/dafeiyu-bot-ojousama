@@ -801,4 +801,85 @@ private final class DelayedModelProtocol: URLProtocol, @unchecked Sendable {
         #expect(!actions.contains("send_private_msg"))
         #expect(!actions.contains("send_group_msg"))
     }
+    @Test func sourceFilterPerUserTuningAndPokeDoNotInterruptActiveReply() async throws {
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        try Data("groupParticipation".utf8).write(to: directory.appendingPathComponent("message-shape"))
+        let server = Process(), output = Pipe()
+        server.executableURL = URL(fileURLWithPath: ProcessInfo.processInfo.environment["DAFEIYU_PYTHON"] ?? "/usr/bin/python3")
+        server.arguments = [URL(fileURLWithPath: #filePath).deletingLastPathComponent().appendingPathComponent("onebot_fixture.py").path, directory.path]
+        server.standardOutput = output; try server.run()
+        defer { if server.isRunning { server.terminate(); server.waitUntilExit() } }
+        let port = try #require(Int(String(decoding: output.fileHandleForReading.availableData, as: UTF8.self).trimmingCharacters(in: .whitespacesAndNewlines)))
+        DelayedModelProtocol.reset()
+        let cfg = URLSessionConfiguration.ephemeral; cfg.protocolClasses = [DelayedModelProtocol.self]
+        let session = URLSession(configuration: cfg)
+        defer { session.invalidateAndCancel(); DelayedModelProtocol.reset() }
+        let engine = QQEngine(allowAuthenticationUI: false, storageDirectory: directory, modelClient: DeepSeekClient(session: session))
+        defer { engine.disconnect() }
+        engine.config.endpoint = "ws://127.0.0.1:\(port)"; engine.config.expectedSelfID = "12345"
+        engine.config.effectiveGroupParticipationEnabled = true
+        engine.config.effectiveGroupParticipationEvery = 2
+        engine.config.ai.cooldownSeconds = 1; engine.config.ai.effectiveSendLimits.globalIntervalSeconds = 1
+        engine.config.effectivePersona.stickersEnabled = false
+        engine.config.effectiveSenderRules = [
+            QQSenderRule(number: "54322", mentionOnly: true),
+            QQSenderRule(number: "54321", dailyLimit: 2, proactiveWeight: 2)
+        ]
+        #expect(engine.promptSections().count == 4)
+        #expect(engine.useTemporaryCredentials(token: "synthetic-test-token", key: "synthetic-key"))
+        await engine.connect(); try #require(engine.connected, "\(engine.error ?? engine.status)")
+        engine.add(try #require(engine.contacts.first { $0.number == "99999" }))
+        engine.config.targets[0].enabled = true
+        engine.config.targets[0].effectiveIgnoredSenders = ["77777"]
+        engine.start(); try #require(engine.running)
+
+        func msg(_ id: Int, sender: Int, text: String, mention: Bool = false) -> [String: Any] {
+            var segments: [[String: Any]] = [["type": "text", "data": ["text": text]]]
+            if mention { segments.insert(["type": "at", "data": ["qq": "12345"]], at: 0) }
+            return ["post_type": "message", "self_id": 12345, "user_id": sender, "sender": ["user_id": sender], "message_type": "group", "sub_type": "normal", "group_id": 99999, "message_id": id, "message": segments]
+        }
+        func poke(_ sender: Int, target: Int = 12345) -> [String: Any] {
+            ["post_type": "notice", "notice_type": "notify", "sub_type": "poke", "self_id": 12345, "user_id": sender, "target_id": target, "group_id": 99999]
+        }
+        // 1) Ignored bot 77777 and mentionOnly 54322 must not increment count or trigger replies.
+        // 2) Weighted user 54321 (proactiveWeight=2) reaches threshold=2 in a single message.
+        // 3) A poke arrives while 54321's proactive reply is actively generating; it must not interrupt the active reply.
+        let batch: [[String: Any]] = [
+            msg(1, sender: 77777, text: "机器人普通刷屏"),
+            msg(2, sender: 77777, text: "机器人艾特刷屏", mention: true),
+            msg(3, sender: 54322, text: "仅艾特用户普通消息"),
+            poke(77777),
+            msg(4, sender: 54321, text: "高权重成员发起讨论"),
+            poke(54321)
+        ]
+        try writePrivateData(JSONSerialization.data(withJSONObject: batch), to: directory.appendingPathComponent("event-batch"))
+        let startedDeadline = Date().addingTimeInterval(3)
+        while DelayedModelProtocol.counts.started == 0 && Date() < startedDeadline { try await Task.sleep(nanoseconds: 20_000_000) }
+        // Only the active reply has started; the poke waits in its separate worker without preempting.
+        #expect(DelayedModelProtocol.counts.started == 1)
+        #expect(engine.queuedCount == 0)
+        #expect(engine.logs.contains { $0.detail.contains("群聊来源过滤") })
+        let draftBody = try #require(DelayedModelProtocol.counts.bodies.first)
+        #expect(draftBody.contains("高权重成员发起讨论"))
+        #expect(draftBody.contains("机器人普通刷屏")) // Kept in timeline as background.
+
+        let doneDeadline = Date().addingTimeInterval(6)
+        while engine.sends.confirmed < 2 && Date() < doneDeadline {
+            DelayedModelProtocol.completePending()
+            try await Task.sleep(nanoseconds: 20_000_000)
+        }
+        #expect(engine.sends.confirmed == 2) // 1 proactive reply + 1 poke reply
+        #expect(engine.logs.contains { $0.detail.contains("已回应戳一戳") })
+
+        // 54321 has now used 2/2 of their dailyLimit; a 3rd message from 54321 is skipped by per-user dailyLimit.
+        try writePrivateData(JSONSerialization.data(withJSONObject: [msg(5, sender: 54321, text: "超过个人每日上限", mention: true)]), to: directory.appendingPathComponent("event-batch"))
+        let limitDeadline = Date().addingTimeInterval(2)
+        while !engine.logs.contains(where: { $0.detail.contains("该成员今日回复已达上限") }) && Date() < limitDeadline {
+            try await Task.sleep(nanoseconds: 20_000_000)
+        }
+        #expect(engine.logs.contains { $0.detail.contains("该成员今日回复已达上限") })
+        #expect(engine.sends.confirmed == 2)
+    }
 }

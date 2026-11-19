@@ -48,7 +48,7 @@ import BotCore
             switch mode {
             case "connection": return engine.save(token: "synthetic-token", endpoint: "ws://127.0.0.1:3101")
             case "visual":
-                var settings = QQVisualConfig(); settings.provider = .zhipu
+                var settings = QQVisualConfig(); settings.googleWebEnabled = true
                 return engine.saveVisualTools(settings, googleKey: "synthetic-google", persistCredentials: true)
             default:
                 var settings = QQImageGenerationConfig(); settings.enabled = true

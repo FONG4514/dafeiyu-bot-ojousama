@@ -217,9 +217,10 @@ with tempfile.TemporaryDirectory(prefix='dafeiyu-panel-test-') as folder:
         assert saved['configurationSaved'] and not saved['error'] and saved['imageGeneration'] == image_settings and saved['config']['ai'] == prior_ai
         invalid = action({'action': 'saveImageGeneration', 'imageGeneration': dict(image_settings, cloudflareAccountID='invalid')})
         assert invalid['error'] and invalid['config'] == saved['config']
-        visual_settings = dict(saved['visualTools'], provider='zhipu', googleWebEnabled=True)
+        visual_settings = dict(saved['visualTools'], provider='deepseek', googleWebEnabled=True)
         saved = action({'action': 'saveVisualTools', 'visualTools': visual_settings, 'persistVisualCredentials': False})
         assert saved['configurationSaved'] and not saved['error'] and saved['visualTools'] == visual_settings and saved['imageGeneration'] == image_settings
+        assert len(saved['promptSections']) == 4
         assert any('启用识图' in hint for hint in saved['configurationHints'])
         assert any('联网开关未启用' in hint for hint in saved['configurationHints'])
         artwork_settings = dict(saved['artwork'], scheduleMinute=19)

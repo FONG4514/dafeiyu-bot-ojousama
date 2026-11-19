@@ -29,6 +29,7 @@ struct QQReplyForm: Equatable {
     var perChatDaily: String
     var persona: QQPersona
     var targets: [QQTarget]
+    var senderRules: [QQSenderRule]
     var onlineEnabled: Bool
     var visionEnabled: Bool
     var memoryEnabled: Bool
@@ -37,6 +38,7 @@ struct QQReplyForm: Equatable {
     var groupParticipationEvery: Int
     init(_ config: QQConfig) {
         ai = config.ai; persona = config.effectivePersona; targets = config.targets
+        senderRules = config.effectiveSenderRules
         dailyLimit = String(config.ai.dailyLimit)
         sendDaily = String(config.ai.effectiveSendLimits.daily)
         perChatDaily = String(config.ai.effectiveSendLimits.perChatDaily)

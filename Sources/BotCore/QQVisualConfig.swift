@@ -1,8 +1,15 @@
 import Foundation
 
 public enum QQVisionProvider: String, Codable, CaseIterable, Sendable {
-    case deepseek, zhipu
-    public var title: String { self == .zhipu ? "智谱 GLM-4.6V-Flash" : "DeepSeek 原有识图" }
+    case deepseek
+    public var title: String { "当前模型原生识图" }
+    public init(from decoder: Decoder) throws {
+        let raw = try decoder.singleValueContainer().decode(String.self)
+        guard ["deepseek", "zhipu"].contains(raw) else {
+            throw DecodingError.dataCorrupted(.init(codingPath: decoder.codingPath, debugDescription: "不支持的识图服务"))
+        }
+        self = .deepseek
+    }
 }
 
 // No credentials in persisted settings. Existing installations retain their provider until changed.

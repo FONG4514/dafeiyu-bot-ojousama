@@ -23,7 +23,7 @@ private final class VisualFixture: URLProtocol, @unchecked Sendable {
             while stream.hasBytesAvailable { let n = stream.read(&buffer, maxLength: buffer.count); if n <= 0 { break }; data.append(contentsOf: buffer.prefix(n)) }; copy.httpBody = data
         }
         Self.lock.lock(); Self.requests.append(copy); let mode = Self.mode; Self.lock.unlock()
-        if mode == "hold" && request.url?.host == "open.bigmodel.cn" { return }
+        if mode == "hold" && ["open.bigmodel.cn", "api.deepseek.com"].contains(request.url?.host ?? "") { return }
         if request.url?.host == "gchat.qpic.cn" {
             client?.urlProtocol(self, didReceive: HTTPURLResponse(url: request.url!, statusCode: 200, httpVersion: nil, headerFields: nil)!, cacheStoragePolicy: .notAllowed)
             client?.urlProtocol(self, didLoad: mode == "unread" ? Data("not an image".utf8) : try! QQIncomingImagesTests.animatedFixture()); client?.urlProtocolDidFinishLoading(self); return
@@ -109,13 +109,34 @@ private final class VisualFixture: URLProtocol, @unchecked Sendable {
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
         defer { try? FileManager.default.removeItem(at: directory) }
         let engine = QQEngine(allowAuthenticationUI: false, storageDirectory: directory)
-        var config = QQVisualConfig(); config.provider = .zhipu; config.googleWebEnabled = true
+        var config = QQVisualConfig(); config.provider = .deepseek; config.googleWebEnabled = true
         engine.saveVisualTools(config, googleKey: "synthetic-google-secret", persistCredentials: false)
         #expect(engine.error == nil); #expect(engine.hasGoogleVisionKey)
         let state = try String(contentsOf: directory.appendingPathComponent("qq-state.json"))
-        #expect(state.contains("zhipu")); #expect(!state.contains("synthetic-google-secret"))
+        #expect(state.contains("deepseek")); #expect(!state.contains("synthetic-google-secret"))
+        let legacy = try JSONDecoder().decode(QQVisualConfig.self, from: Data(#"{"provider":"zhipu","googleWebEnabled":false}"#.utf8))
+        #expect(legacy.provider == .deepseek)
+        #expect(QQVisionProvider.allCases == [.deepseek])
         #expect(QQConfig().effectiveVisualTools.provider == .deepseek)
         #expect(!QQConfig().effectiveVisualTools.googleWebEnabled)
+    }
+    @Test func nativeMultimodalDetectsFormatsAndRoutesDeepSeekVisionToFlash() throws {
+        let jpeg = Data([0xFF, 0xD8, 0xFF, 0xE0, 0x00, 0x10])
+        let png = Data([0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A, 0x00])
+        let gif = Data("GIF89a".utf8 + [0x01, 0x00])
+        let webp = Data("RIFF".utf8 + [0x00, 0x00, 0x00, 0x00] + "WEBP".utf8)
+        #expect(DeepSeekClient.imageMimeType(jpeg) == "image/jpeg")
+        #expect(DeepSeekClient.imageMimeType(png) == "image/png")
+        #expect(DeepSeekClient.imageMimeType(gif) == "image/gif")
+        #expect(DeepSeekClient.imageMimeType(webp) == "image/webp")
+        #expect((1...1024).contains(DeepSeekClient.estimatedImageTokens(jpeg)))
+        #expect(DeepSeekClient.estimatedImageTokens(Data()) == 0)
+        var largeJPEG = jpeg; largeJPEG.append(Data(repeating: 0x00, count: 1_500_000))
+        #expect(DeepSeekClient.estimatedImageTokens(largeJPEG) == 1024)
+        #expect(DeepSeekClient.effectiveModel(configured: "deepseek-v4-flash-vision-exp", hasImages: true) == ("deepseek-flash", true))
+        #expect(DeepSeekClient.effectiveModel(configured: "deepseek-v4-pro", hasImages: true) == ("deepseek-flash", true))
+        #expect(DeepSeekClient.effectiveModel(configured: "custom-vision-model", hasImages: true) == ("custom-vision-model", true))
+        #expect(DeepSeekClient.effectiveModel(configured: "custom-no-vision", hasImages: true) == ("custom-no-vision", false))
     }
     @Test(arguments: ["ok", "hold", "quota", "proactive", "unread"]) func actualEngineRoutesGIFThroughVisionAndCancelsSafely(_ mode: String) async throws {
         let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
@@ -133,7 +154,7 @@ private final class VisualFixture: URLProtocol, @unchecked Sendable {
         let engine = QQEngine(allowAuthenticationUI: false, storageDirectory: directory, modelClient: DeepSeekClient(session: session), incomingImageLoader: QQIncomingImages(session: session))
         defer { engine.disconnect() }
         engine.config.expectedSelfID = "12345"; engine.config.endpoint = "ws://127.0.0.1:\(port)"
-        var visual = QQVisualConfig(); visual.provider = .zhipu; visual.googleWebEnabled = true
+        var visual = QQVisualConfig(); visual.provider = .deepseek; visual.googleWebEnabled = true
         engine.saveVisualTools(visual, googleKey: "synthetic-google", persistCredentials: false)
         engine.saveImageGeneration(QQImageGenerationConfig(), zhipuKey: "synthetic-zhipu", cloudflareToken: "", persistCredentials: false)
         engine.config.effectiveVisionEnabled = true; engine.config.effectiveOnlineEnabled = true
@@ -153,32 +174,36 @@ private final class VisualFixture: URLProtocol, @unchecked Sendable {
         } else { try Data().write(to: directory.appendingPathComponent("ready")) }
         let deadline = Date().addingTimeInterval(5)
         while Date() < deadline {
-            if mode == "hold" && VisualFixture.captured.contains(where: { $0.url?.host == "open.bigmodel.cn" }) { engine.pause(); break }
-            if mode == "unread" && engine.logs.contains(where: { $0.detail.contains("紧邻媒体") }) { break }
+            if mode == "hold" && VisualFixture.captured.contains(where: { $0.url?.host == "api.deepseek.com" }) { engine.pause(); break }
             if mode == "quota" && engine.logs.contains(where: { $0.state == .failed }) { break }
             if engine.sends.confirmed == 1 { break }
             try await Task.sleep(nanoseconds: 20_000_000)
         }
         try await Task.sleep(nanoseconds: 100_000_000)
         let requests = VisualFixture.captured
-        if mode == "ok" || mode == "proactive" {
-            #expect(engine.sends.confirmed == 1); #expect(engine.usage.calls == (mode == "proactive" ? 3 : 4))
-            if mode == "proactive" { #expect(!requests.contains { $0.url?.host == "vision.googleapis.com" }) }
-            let vision = try #require(requests.first(where: { $0.url?.host == "open.bigmodel.cn" })?.httpBody)
-            #expect(String(decoding: vision, as: UTF8.self).components(separatedBy: "image_url").count > 6)
+        #expect(!requests.contains { $0.url?.host == "open.bigmodel.cn" })
+        if ["ok", "proactive", "unread"].contains(mode) {
+            #expect(engine.sends.confirmed == 1); #expect(engine.usage.calls == (mode == "ok" ? 3 : 2))
+            if mode != "ok" { #expect(!requests.contains { $0.url?.host == "vision.googleapis.com" }) }
             let deepseek = requests.filter { $0.url?.host == "api.deepseek.com" }
             #expect(deepseek.count == 2)
             for request in deepseek {
                 let body = String(decoding: try #require(request.httpBody), as: UTF8.self)
-                #expect(body.contains("向右移动")); #expect(!body.contains("data:image")); #expect(!body.contains("synthetic-google"))
+                #expect(!body.contains("synthetic-google"))
+                if mode == "unread" {
+                    #expect(body.contains("未读取") && body.contains("没看到画面"))
+                    #expect(!body.contains("data:image"))
+                } else {
+                    #expect(body.components(separatedBy: "image_url").count > 6)
+                    #expect(body.contains("data:image\\/jpeg;base64,") || body.contains("data:image/jpeg;base64,"))
+                }
             }
             let payload = try #require(JSONSerialization.jsonObject(with: Data(contentsOf: directory.appendingPathComponent("payload"))) as? [String: Any])
             let segments = try #require(payload["message"] as? [[String: Any]])
             #expect(segments.count == 1); #expect(segments[0]["type"] as? String == "text")
         } else {
             #expect(engine.sends.attempts == 0)
-            #expect(!requests.contains { $0.url?.host == "api.deepseek.com" })
-            if mode == "quota" { #expect(!requests.contains { $0.url?.host == "open.bigmodel.cn" }) }
+            if mode == "quota" { #expect(!requests.contains { $0.url?.host == "api.deepseek.com" }) }
         }
     }
 
