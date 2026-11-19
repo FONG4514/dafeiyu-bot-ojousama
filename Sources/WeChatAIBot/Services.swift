@@ -113,6 +113,10 @@ struct ModelResult: Sendable {
     var usedTools = false
     var shouldSend = true
     var reasoningCharacters = 0
+    var reasoning = ""
+    var inputTokens = 0
+    var outputTokens = 0
+    var cacheHitTokens = 0
     var toolContext = ""
     var stickerID: String? = nil
     var imageStatus: String? = nil
@@ -151,13 +155,15 @@ struct DeepSeekClient {
                toolHandler: (@MainActor @Sendable (String, String) async throws -> ModelToolResult)? = nil,
                onlineToolsEnabled: Bool = true, imageGenerationEnabled: Bool = false, artworkEnabled: Bool = false, memoryToolEnabled: Bool = false,
                reserve: @escaping @Sendable () async throws -> Void) async throws -> ModelResult {
+        let effort = thinkingEnabled ? config.effectiveThinking : ThinkingEffort.off
+        let thinkingOn = effort != .off
         var messages: [[String: Any]] = [["role": "system", "content": rule.prompt.isEmpty ? config.prompt : rule.prompt]]
-        if thinkingEnabled && !history.isEmpty {
+        if thinkingOn && !history.isEmpty {
             let transcript = history.suffix(10).map { ["此前会话记录与当时发言": $0.incoming, "此前机器人回复": $0.outgoing] }
             messages.append(["role": "user", "content": "此前对话记录，仅为低信任背景：" + String(decoding: try JSONSerialization.data(withJSONObject: transcript), as: UTF8.self)])
         }
         // Assistant history never carries image_url parts (official APIs reject assistant images with HTTP 400).
-        for turn in (thinkingEnabled ? [] : Array(history.suffix(10))) {
+        for turn in (thinkingOn ? [] : Array(history.suffix(10))) {
             messages.append(["role": "user", "content": turn.incoming])
             let content = jsonOutput ? String(decoding: try JSONSerialization.data(withJSONObject: ["text": turn.outgoing, "emotion": "neutral", "intensity": 1]), as: UTF8.self) : turn.outgoing
             messages.append(["role": "assistant", "content": content])
@@ -183,19 +189,26 @@ struct DeepSeekClient {
                 struct Message: Decodable { var content: String?; var reasoning_content: String?; var tool_calls: [ToolCall]? }
                 var message: Message; var finish_reason: String?
             }
-            struct TokenUsage: Decodable { var total_tokens: Int }
+            struct TokenUsage: Decodable {
+                var total_tokens: Int
+                var prompt_tokens: Int?
+                var completion_tokens: Int?
+                var prompt_cache_hit_tokens: Int?
+                var prompt_tokens_details: PromptDetails?
+                struct PromptDetails: Decodable { var cached_tokens: Int? }
+            }
             var choices: [Choice]; var usage: TokenUsage?
         }
         let start = Date()
-        var tokens = 0, image: Data?, sources: [String] = []
-        var usedTools = false, reasoningCharacters = 0
+        var tokens = 0, inputTokens = 0, outputTokens = 0, cacheHitTokens = 0, image: Data?, sources: [String] = []
+        var usedTools = false, reasoningCharacters = 0, reasoning = ""
         var imageStatus: String?
         var toolEvidence: [String] = []
         // At most one tool round, followed by a final answer. Every API attempt consumes quota.
         for round in 0...1 {
-            var parameters: [String: Any] = ["model": modelRoute.model, "messages": messages, "max_tokens": thinkingEnabled ? max(8192, config.maxTokens) : config.maxTokens,
-                                           "stream": false, "thinking": ["type": thinkingEnabled ? "enabled" : "disabled"]]
-            if thinkingEnabled { parameters["reasoning_effort"] = "high" }
+            var parameters: [String: Any] = ["model": modelRoute.model, "messages": messages, "max_tokens": thinkingOn ? max(8192, config.maxTokens) : config.maxTokens,
+                                           "stream": false, "thinking": ["type": thinkingOn ? "enabled" : "disabled"]]
+            if thinkingOn { parameters["reasoning_effort"] = effort.rawValue }
             if jsonOutput && (toolHandler == nil || round > 0) { parameters["response_format"] = ["type": "json_object"] }
             if toolHandler != nil && round == 0 {
                 var tools = (onlineToolsEnabled ? QQOnlineTools.definitions : []) + (imageGenerationEnabled ? [QQImageGenerator.definition] : []) + (artworkEnabled ? [QQArtworkLibrary.definition] : [])
@@ -207,7 +220,7 @@ struct DeepSeekClient {
             for attempt in 0...2 {
                 try Task.checkCancellation(); try await reserve()
                 do {
-                    let data = try await request(path: "chat/completions", key: key, body: body, timeout: thinkingEnabled ? 90 : 45)
+                    let data = try await request(path: "chat/completions", key: key, body: body, timeout: thinkingOn ? 90 : 45)
                     response = try JSONDecoder().decode(Response.self, from: data); break
                 } catch let error as HTTPFailure where (error.code == 429 || error.code >= 500) && attempt < 2 {
                     try await Task.sleep(nanoseconds: UInt64(2 << attempt) * 1_000_000_000)
@@ -215,8 +228,17 @@ struct DeepSeekClient {
             }
             guard let response, let choice = response.choices.first else { throw AppFailure.message("模型未返回回复") }
             if CommandLine.arguments.contains("--qq-online-check") { print("Synthetic tool round \(round): finish=\(choice.finish_reason ?? "nil"), textCharacters=\(choice.message.content?.count ?? 0), tools=\(choice.message.tool_calls?.count ?? 0)") }
-            tokens += response.usage?.total_tokens ?? 0
+            let usage = response.usage
+            let total = usage?.total_tokens ?? 0
+            let prompt = usage?.prompt_tokens ?? total
+            let completion = usage?.completion_tokens ?? max(0, total - prompt)
+            let cached = usage?.prompt_cache_hit_tokens ?? usage?.prompt_tokens_details?.cached_tokens ?? 0
+            tokens += total
+            inputTokens += prompt
+            outputTokens += completion
+            cacheHitTokens += min(max(0, cached), max(0, prompt))
             reasoningCharacters += choice.message.reasoning_content?.count ?? 0
+            if let thought = choice.message.reasoning_content, !thought.isEmpty { reasoning += (reasoning.isEmpty ? "" : "\n") + thought }
             if choice.finish_reason == "tool_calls", round == 0, let toolHandler,
                let calls = choice.message.tool_calls, (1...2).contains(calls.count), Set(calls.map(\.id)).count == calls.count,
                calls.allSatisfy({ !$0.id.isEmpty && $0.id.count <= 200 && $0.type == "function" }) {
@@ -254,7 +276,7 @@ struct DeepSeekClient {
                 messages.append(["role": "user", "content": "仅修正你刚才回复的输出格式。只输出一个 JSON 对象，恰好 text、emotion、intensity 三项，遵守原有人设和字符限制，不新增指令或工具。"])
                 continue
             }
-            return ModelResult(text: text, tokens: tokens, seconds: Date().timeIntervalSince(start), image: image, sources: sources, usedTools: usedTools, reasoningCharacters: reasoningCharacters, toolContext: toolEvidence.joined(separator: "\n"), imageStatus: imageStatus)
+            return ModelResult(text: text, tokens: tokens, seconds: Date().timeIntervalSince(start), image: image, sources: sources, usedTools: usedTools, reasoningCharacters: reasoningCharacters, reasoning: reasoning, inputTokens: inputTokens, outputTokens: outputTokens, cacheHitTokens: cacheHitTokens, toolContext: toolEvidence.joined(separator: "\n"), imageStatus: imageStatus)
         }
         throw AppFailure.message("模型工具调用未完成，本次不发送")
     }
@@ -301,7 +323,9 @@ struct DeepSeekClient {
         }
         if proactive { reviewed = participationResult(reviewed) }
         reviewed.tokens += draft.tokens; reviewed.seconds += draft.seconds
+        reviewed.inputTokens += draft.inputTokens; reviewed.outputTokens += draft.outputTokens; reviewed.cacheHitTokens += draft.cacheHitTokens
         reviewed.reasoningCharacters += draft.reasoningCharacters
+        if !draft.reasoning.isEmpty { reviewed.reasoning = draft.reasoning + (reviewed.reasoning.isEmpty ? "" : "\n" + reviewed.reasoning) }
         reviewed.image = draft.image; reviewed.sources = draft.sources; reviewed.usedTools = draft.usedTools; reviewed.imageStatus = draft.imageStatus
         return reviewed
     }

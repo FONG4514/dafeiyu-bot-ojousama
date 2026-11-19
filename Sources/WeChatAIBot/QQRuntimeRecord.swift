@@ -13,7 +13,9 @@ struct QQRuntimeRecord: Encodable, Identifiable {
 
     init(_ entry: LogEntry, target: QQTarget?, secrets: [String]) {
         id = entry.id; timestamp = entry.date.timeIntervalSince1970; state = entry.state
-        switch entry.state {
+        if entry.kind == "debug" { title = "调试" }
+        else if entry.kind == "reasoning" { title = "思考过程" }
+        else { switch entry.state {
         case .queued: title = "等待处理"
         case .generating: title = "正在生成"
         case .sending: title = "正在发送"
@@ -22,7 +24,7 @@ struct QQRuntimeRecord: Encodable, Identifiable {
         case .failed: title = "处理失败"
         case .uncertain: title = "发送结果未知"
         case .cancelled: title = "已取消"
-        }
+        } }
         // Error descriptions can contain URLs or credentials. Mask loaded values
         // before truncation, and also mask recognizable historical credential forms.
         func display(_ raw: String, limit: Int) -> String {
@@ -37,6 +39,6 @@ struct QQRuntimeRecord: Encodable, Identifiable {
         }
         self.target = target.map { ($0.group ? "群 · " : "好友 · ") + display($0.name, limit: 80) }
             ?? (entry.chatID == nil ? "引擎" : "历史会话（当前名单外）")
-        detail = display(entry.detail, limit: 500)
+        detail = display(entry.detail, limit: entry.kind == "reasoning" ? 4000 : 500)
     }
 }

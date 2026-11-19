@@ -25,7 +25,7 @@ struct QQImagePromptPlan: Decodable {
 
 extension DeepSeekClient {
     func prepareQQImage(key: String, config: BotConfig, text: String, proposed: String? = nil, proactive: Bool,
-                        reserve: @escaping @Sendable () async throws -> Void) async throws -> (QQImagePromptPlan, Int) {
+                        reserve: @escaping @Sendable () async throws -> Void) async throws -> (QQImagePromptPlan, ModelResult) {
         var rule = ChatRule(name: "生图意图整理")
         rule.prompt = """
         [IMAGE_PROMPT_PLAN] 你是中文生图意图与画面提示词整理器，不扮演聊天人设。
@@ -43,6 +43,6 @@ extension DeepSeekClient {
         let input: [String: Any] = ["latest_message": String(text.prefix(6000)), "draft_visual_description": String((proposed ?? "").prefix(1500)), "proactive": proactive]
         let result = try await reply(key: key, config: config, rule: rule, history: [],
             text: String(decoding: try JSONSerialization.data(withJSONObject: input), as: UTF8.self), jsonOutput: true, thinkingEnabled: true, reserve: reserve)
-        return (try QQImagePromptPlan.decode(result.text), result.tokens)
+        return (try QQImagePromptPlan.decode(result.text), result)
     }
 }

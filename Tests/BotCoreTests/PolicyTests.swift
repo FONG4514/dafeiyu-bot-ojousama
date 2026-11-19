@@ -47,6 +47,32 @@ struct PolicyTests {
         #expect(fence.permits(epoch)); fence.stop(); #expect(!(fence.permits(epoch)))
         fence.start(); #expect(!(fence.permits(epoch))); #expect(fence.permits(fence.epoch))
     }
+    @Test func testMoneyCapNeedsPricesAndResetsEachWeek() {
+        var config = BotConfig()
+        var usage = Usage()
+        #expect(!config.spendBlocked(usage))
+        config.inputHitPrice = 1; config.inputMissPrice = 2; config.outputPrice = 3
+        config.dailySpendLimit = 0.01
+        #expect(config.estimatedCost(input: 1_000_000, output: 0, cacheHit: 0) == 2.0)
+        #expect(config.estimatedCost(input: 1_000_000, output: 0, cacheHit: 1_000_000) == 1.0)
+        usage.noteModel(input: 5000, output: 0, cacheHit: 0, apiTotal: 5000, cost: 0.01)
+        #expect(config.spendBlocked(usage))
+        config.dailySpendLimit = nil; config.weeklySpendLimit = 0.01
+        #expect(config.spendBlocked(usage))
+        var calendar = Calendar(identifier: .gregorian)
+        calendar.timeZone = TimeZone(secondsFromGMT: 0)!
+        let monday = calendar.date(from: DateComponents(year: 2026, month: 11, day: 16))!
+        let nextMonday = calendar.date(from: DateComponents(year: 2026, month: 11, day: 23))!
+        usage.noteModel(input: 0, output: 0, cacheHit: 0, apiTotal: 0, cost: nil, now: monday, calendar: calendar)
+        let firstWeek = usage.week
+        usage.noteModel(input: 0, output: 0, cacheHit: 0, apiTotal: 0, cost: nil, now: nextMonday, calendar: calendar)
+        #expect(usage.week != firstWeek && usage.weekSpend == 0)
+        let hidden = LogEntry(state: .queued, detail: "内部", kind: "debug")
+        let thought = LogEntry(state: .queued, detail: "想过", kind: "reasoning")
+        #expect(!hidden.shown(debug: false, reasoning: true))
+        #expect(thought.shown(debug: false, reasoning: true))
+        #expect(LogEntry(state: .confirmed, detail: "已发送").shown(debug: false, reasoning: false))
+    }
     @Test func testDailyBudgetCountsEachAttemptAndResets() {
         var usage = Usage(); let today = Date()
         let first = usage.reserve(limit: 2, now: today), second = usage.reserve(limit: 2, now: today)

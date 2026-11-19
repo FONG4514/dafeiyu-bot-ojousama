@@ -415,6 +415,11 @@ struct QQView: View {
                         }.labeledContentStyle(PanelLabeledContentStyle())
                         HStack(alignment: .top, spacing: 20) {
                             PanelNumberField("每日模型调用上限", text: $editor.replyDraft.value.dailyLimit, in: 1...10000, unit: "次")
+                            Picker("思考等级", selection: Binding(get: { editor.replyDraft.value.ai.thinkingEffort ?? .high }, set: { editor.replyDraft.value.ai.thinkingEffort = $0 })) {
+                                Text("关").tag(ThinkingEffort.off); Text("低").tag(ThinkingEffort.low); Text("高").tag(ThinkingEffort.high); Text("最大").tag(ThinkingEffort.max)
+                            }
+                            Toggle("Debug 日志", isOn: Binding(get: { editor.replyDraft.value.ai.debugLogging ?? false }, set: { editor.replyDraft.value.ai.debugLogging = $0 }))
+                            Toggle("输出思考过程", isOn: Binding(get: { editor.replyDraft.value.ai.reasoningOutput ?? false }, set: { editor.replyDraft.value.ai.reasoningOutput = $0 }))
                             PanelNumberField("每日发送上限", text: $editor.replyDraft.value.sendDaily, in: 1...10000, unit: "条")
                             PanelNumberField("单会话每日发送上限", text: $editor.replyDraft.value.perChatDaily, in: 1...10000, unit: "条")
                         }

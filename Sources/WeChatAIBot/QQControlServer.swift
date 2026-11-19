@@ -270,6 +270,7 @@ import BotCore
                 "supportsKeychain": RuntimeResources.supportsKeychain,
                 "configurationHints": engine.configurationHints,
                 "runtimeRecords": try JSONSerialization.jsonObject(with: JSONEncoder().encode(engine.runtimeRecords)),
+                "usage": ["calls": engine.usage.calls, "tokens": engine.usage.tokens, "inputTokens": engine.usage.inputTokens, "outputTokens": engine.usage.outputTokens, "cacheHitTokens": engine.usage.cacheHitTokens, "daySpend": engine.usage.daySpend, "weekSpend": engine.usage.weekSpend, "pricesReady": engine.config.ai.pricesReady],
                 "imageGeneration": try JSONSerialization.jsonObject(with: JSONEncoder().encode(engine.config.effectiveImageGeneration)),
                 "imageCredentials": ["zhipu": engine.hasZhipuImageKey, "cloudflare": engine.hasCloudflareImageToken],
                 "visualTools": try JSONSerialization.jsonObject(with: JSONEncoder().encode(engine.config.effectiveVisualTools)),

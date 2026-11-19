@@ -50,7 +50,7 @@ struct QQRuntimeCredentials: Decodable {
     var runtimeRecords: [QQRuntimeRecord] {
         let secrets = [runtimeCredentials?.oneBotToken ?? "", runtimeCredentials?.deepSeekKey ?? "",
                        imageCredentials.zhipuKey, imageCredentials.cloudflareToken, googleVisionKey]
-        return logs.suffix(30).reversed().map { entry in
+        return logs.reversed().filter { $0.shown(debug: config.ai.effectiveDebug, reasoning: config.ai.effectiveReasoningOutput) }.prefix(30).map { entry in
             QQRuntimeRecord(entry, target: config.targets.first { $0.id == entry.chatID }, secrets: secrets)
         }
     }
@@ -523,9 +523,11 @@ struct QQRuntimeCredentials: Decodable {
             }
             scheduleMemoryLearning()
             status = config.effectiveGroupParticipationEnabled ? "QQ 自动回复中 · 群真实 @ 或每 \(config.effectiveGroupParticipationEvery) 条主动接话" : "QQ 自动回复中 · 群聊仅响应真实 @"; error = nil
+            debug(nil, "回复已开始，思考=\(config.ai.effectiveThinking.rawValue)")
         } catch { self.error = error.localizedDescription }
     }
     func pause() {
+        debug(nil, "暂停自动回复")
         if let sleepPrevention, sleepPrevention.isRunning { sleepPrevention.terminate() }
         sleepPrevention = nil
         deadlineTask?.cancel(); deadlineTask = nil; runDeadline = nil
@@ -605,6 +607,7 @@ struct QQRuntimeCredentials: Decodable {
             }
         }
         seen[message.dedupKey] = now
+        debug(target.id, "收到\(message.group ? "群" : "私聊")消息 \(message.id)，发言人 \(message.sender)")
         do { try persist() } catch { self.error = error.localizedDescription; return }
         guard config.ai.inWorkHours() else { record(target.id, .skipped, "时段外，不计数或补发"); return }
         if message.group {
@@ -664,7 +667,7 @@ struct QQRuntimeCredentials: Decodable {
                 let count = groupMessageCounts[message.key, default: 0] + weight
                 let reached = count >= config.effectiveGroupParticipationEvery
                 groupMessageCounts[message.key] = reached ? 0 : count
-                guard reached else { return }
+                guard reached else { debug(target.id, "接话计数 \(count)/\(config.effectiveGroupParticipationEvery)，本轮不评估"); return }
                 let snapshot = QQGroupContext(
                     events: groupRecentMessages[message.key, default: []],
                     through: message.id,
@@ -684,7 +687,7 @@ struct QQRuntimeCredentials: Decodable {
                 proactive = true
             }
         }
-        if message.group && !message.mentionsSelf && !proactive { return } // Memory capture alone never authorizes a reply.
+        if message.group && !message.mentionsSelf && !proactive { debug(target.id, "群消息已记入时间线，本轮不回复"); return }
         switch senderAllowance(for: message.sender) {
         case .chatLimit, .globalLimit:
             record(target.id, .skipped, "按人接话限制：该成员今日回复已达上限"); return
@@ -702,11 +705,13 @@ struct QQRuntimeCredentials: Decodable {
             return false
         }) {
             queue[existingIndex] = .reply(message, target, true)
+            debug(target.id, "同一群尚未开始的主动接话改为最新一条，较早发言仍留在时间线")
             startQueue()
             return
         }
         guard queue.count < Self.queueCapacity else { record(target.id, .skipped, "队列已满，本次触发不补发"); return }
         queue.append(.reply(message, target, proactive))
+        debug(target.id, proactive ? "主动接话已入队" : "回复已入队")
         startQueue()
     }
     private func receivePoke(_ object: [String: Any]) {
@@ -758,7 +763,7 @@ struct QQRuntimeCredentials: Decodable {
                 var rule = ChatRule(id: target.id, name: target.name)
                 rule.prompt = persona.prompt(notes: config.ai.prompt) + config.boundRoster(for: incoming)
                 let key = try runtimeCredentials?.deepSeekKey ?? Keychain.load(allowAuthenticationUI: allowAuthenticationUI)
-                let result = try await modelClient.reply(key: key, config: config.ai, rule: rule, history: [], text: incoming.text, jsonOutput: true, thinkingEnabled: false, reserve: { [weak self] in
+                let result = try await modelClient.reply(key: key, config: config.ai, rule: rule, history: [], text: incoming.text, jsonOutput: true, thinkingEnabled: true, reserve: { [weak self] in
                     guard let self else { throw CancellationError() }
                     try await self.reserveModel(epoch, scope: poke.key, target: target)
                 })
@@ -766,7 +771,7 @@ struct QQRuntimeCredentials: Decodable {
                     try await Task.sleep(nanoseconds: 200_000_000); try check(epoch, scope: poke.key, target: target)
                 }
                 try check(epoch, scope: poke.key, target: target)
-                usage.tokens += result.tokens
+                absorb(result, target: target)
                 let reply = persona.decode(result.text, input: incoming.text)
                 guard sends.allowance(chat: target.id, limits: config.ai.effectiveSendLimits, chatCooldown: config.ai.cooldownSeconds) == .allowed else {
                     record(target.id, .skipped, "发送限额已用完，跳过戳一戳"); continue
@@ -1088,7 +1093,7 @@ struct QQRuntimeCredentials: Decodable {
                     }
                 }
                 try check(epoch, scope: message.key, target: target)
-                usage.tokens += result.tokens
+                absorb(result, target: target)
                 if proactive && (!result.shouldSend || Date().timeIntervalSince1970 - message.time > 120) {
                     record(target.id, .skipped, "主动接话评估后保持安静：不适合加入、依据不足或话题已过时")
                     try persist(); continue
@@ -1383,11 +1388,11 @@ struct QQRuntimeCredentials: Decodable {
     }
     private func prepareImage(request: String, proposed: String? = nil, proactive: Bool, epoch: UInt64,
                               message: QQIncoming, target: QQTarget, key: String) async throws -> ModelToolResult? {
-        let (plan, tokens) = try await modelClient.prepareQQImage(key: key, config: config.ai, text: request, proposed: proposed, proactive: proactive, reserve: { [weak self] in
+        let (plan, model) = try await modelClient.prepareQQImage(key: key, config: config.ai, text: request, proposed: proposed, proactive: proactive, reserve: { [weak self] in
             guard let self else { throw CancellationError() }
             try await self.reserveModel(epoch, scope: message.key, target: target)
         })
-        try check(epoch, scope: message.key, target: target); usage.tokens += tokens
+        try check(epoch, scope: message.key, target: target); absorb(model, target: target)
         if plan.action == .none { return nil }
         let result: ModelToolResult
         if plan.action == .decline {
@@ -1450,10 +1455,11 @@ struct QQRuntimeCredentials: Decodable {
                     candidates = Array(Dictionary(grouping: candidates, by: \.id).values.compactMap(\.first).sorted { $0.updatedAt > $1.updatedAt }.prefix(48))
                     let key = try self.runtimeCredentials?.deepSeekKey ?? Keychain.load(allowAuthenticationUI: self.allowAuthenticationUI)
                     self.memoryStatus = "正在整理会话重点"
+                    self.debug(target?.id, "开始整理记忆 \(batch.count) 条")
                     let chat = String(scope.dropFirst(self.config.expectedSelfID.count + 1))
                     let directory = self.memoryStore?.prompt(scope: scope, query: batch.map(\.text).joined(separator: "\n"), subject: "", characters: 400, catalogLimit: 32) ?? ""
                     let roster = self.config.memoryAnonymousRoster(chat: chat) + self.config.memoryAccessPrompt(chat: chat) + (directory.isEmpty ? "" : "\n已有类别目录：\n" + directory)
-                    let (delta, tokens, suppliedIDs) = try await self.modelClient.learnQQMemory(key: key, config: self.config.ai, events: batch, candidates: candidates, roster: roster, reserve: { [weak self] in
+                    let (delta, learned, suppliedIDs) = try await self.modelClient.learnQQMemory(key: key, config: self.config.ai, events: batch, candidates: candidates, roster: roster, reserve: { [weak self] in
                         guard let self else { throw CancellationError() }
                         try await self.reserveModel(epoch, scope: target?.key ?? "", target: target, bound: bound)
                     })
@@ -1467,7 +1473,7 @@ struct QQRuntimeCredentials: Decodable {
                     try self.memoryStore?.snapshot()
                     current.clearItems()
                     self.memoryBooks[scope] = current; self.memoryIndexes[scope] = nil
-                    self.usage.tokens += tokens; self.memoryRetryAfter.removeValue(forKey: scope)
+                    self.absorb(learned, target: target); self.memoryRetryAfter.removeValue(forKey: scope)
                     self.memoryForceLearn = false
                     self.memoryStatus = "记忆整理完成：\(batch.count) 条片段，\(delta.changes.count) 项重点变更"
                     try self.persist()
@@ -1499,11 +1505,28 @@ struct QQRuntimeCredentials: Decodable {
     }
     private func reserveModel(_ epoch: UInt64, scope: String, target: QQTarget?, bound: QQSenderPersona? = nil) throws {
         try check(epoch, scope: scope, target: target, bound: bound)
+        guard !config.ai.spendBlocked(usage) else { throw AppFailure.message("QQ 金额上限已到，本次不调用模型") }
         guard usage.reserve(limit: config.ai.dailyLimit) else { throw AppFailure.message("QQ 今日模型调用已达上限") }
         try persist()
     }
-    private func record(_ target: UUID?, _ state: JobState, _ detail: String) {
-        logs.append(LogEntry(chatID: target, state: state, detail: detail))
+    private func absorb(_ result: ModelResult, target: QQTarget?) {
+        let cost = config.ai.estimatedCost(input: result.inputTokens, output: result.outputTokens, cacheHit: result.cacheHitTokens)
+        usage.noteModel(input: result.inputTokens, output: result.outputTokens, cacheHit: result.cacheHitTokens, apiTotal: result.tokens, cost: cost)
+        if config.ai.effectiveReasoningOutput {
+            let text = result.reasoning.trimmingCharacters(in: .whitespacesAndNewlines)
+            if !text.isEmpty { record(target?.id, .queued, String(text.prefix(4000)), kind: "reasoning") }
+        }
+        if config.ai.effectiveDebug {
+            let money = cost.map { String(format: " 金额≈%.6f", $0) } ?? " 未填单价"
+            debug(target?.id, "模型返回 思考=\(config.ai.effectiveThinking.rawValue) 输入\(result.inputTokens) 输出\(result.outputTokens) 缓存命中\(result.cacheHitTokens)\(money)")
+        }
+    }
+    private func debug(_ target: UUID?, _ detail: String) {
+        guard config.ai.effectiveDebug else { return }
+        record(target, .queued, detail, kind: "debug")
+    }
+    private func record(_ target: UUID?, _ state: JobState, _ detail: String, kind: String? = nil) {
+        logs.append(LogEntry(chatID: target, state: state, detail: detail, kind: kind))
         do { try persist() } catch { self.error = error.localizedDescription }
     }
     private func persist() throws {
