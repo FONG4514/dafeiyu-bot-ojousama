@@ -91,7 +91,7 @@ final class QQMemoryStore: @unchecked Sendable {
     }
     func prompt(scope: String, query: String, subject: String, characters: Int, catalog: Bool = true, catalogLimit: Int = 12, now: Date = Date()) -> String {
         queue.sync {
-            let listed = categories(scope, now: now).filter { subject.isEmpty || $0.subject == subject }.prefix(catalogLimit)
+            let listed = categories(scope, now: now, includePeerGroups: !subject.isEmpty).filter { subject.isEmpty || $0.subject == subject || $0.subject == "PEER(群记忆)" }.prefix(catalogLimit)
             let catalogText = listed.map { "[\($0.subject)] \($0.name)(\($0.count))" }.joined(separator: " ")
             var lines: [String] = [], used = 0
             for row in ranked(scope: scope, query: query, subject: subject, categories: [], history: false, now: now).prefix(3) {
@@ -235,6 +235,18 @@ final class QQMemoryStore: @unchecked Sendable {
     func testingSetByteLimit(_ bytes: Int64) { queue.sync { sqlite3_hard_heap_limit64(bytes) } }
 
     private struct Stored { var item: QQMemoryItem; var mentions: Int; var last: Date; var categories: [String] }
+    /// Private chats may read this specific peer's verified memories from groups under the same account.
+    /// Groups never read private chats or other groups.
+    private func peerGroupScopes(for scope: String) -> [(scope: String, subject: String)] {
+        let parts = scope.split(separator: ":").map(String.init)
+        guard parts.count == 3, parts[1] == "private", !parts[0].isEmpty, !parts[2].isEmpty else { return [] }
+        let account = parts[0], peer = parts[2]
+        let groupScopes = (try? strings("SELECT DISTINCT scope FROM subjects WHERE scope LIKE ? ORDER BY scope", account + ":group:%")) ?? []
+        return groupScopes.map { groupScope in
+            let target = String(groupScope.dropFirst(account.count + 1))
+            return (scope: groupScope, subject: QQMemoryBook.subject(account: account, target: target, sender: peer))
+        }
+    }
     private func ranked(scope: String, query: String, subject: String, categories requested: [String], history: Bool, now: Date) -> [Stored] {
         let terms = QQMemoryIndex.terms(query)
         var ids = Set<String>()
@@ -249,7 +261,26 @@ final class QQMemoryStore: @unchecked Sendable {
         }
         let cutoff = now.addingTimeInterval(-90 * 86400)
         let marks = ids.map { _ in "?" }.joined(separator: ",")
-        let selected = ids.isEmpty ? [] : ((try? stored("SELECT i.id,s.subject,i.kind,i.text,i.keywords,i.importance,i.source_ids,i.updated_at,i.expires_at,i.invalidated_at,i.mention_count,i.last_mentioned FROM items i JOIN subjects s ON s.id=i.subject_id WHERE s.scope=? AND i.id IN (\(marks))", values: [scope] + ids.map { $0 as Any })) ?? [])
+        var selected = ids.isEmpty ? [] : ((try? stored("SELECT i.id,s.subject,i.kind,i.text,i.keywords,i.importance,i.source_ids,i.updated_at,i.expires_at,i.invalidated_at,i.mention_count,i.last_mentioned FROM items i JOIN subjects s ON s.id=i.subject_id WHERE s.scope=? AND i.id IN (\(marks))", values: [scope] + ids.map { $0 as Any })) ?? [])
+        for related in peerGroupScopes(for: scope) {
+            var groupIDs = Set<String>()
+            for term in terms.prefix(24) {
+                groupIDs.formUnion((try? strings("SELECT i.id FROM terms t JOIN items i ON i.id=t.item_id JOIN subjects s ON s.id=i.subject_id WHERE s.scope=? AND s.subject=? AND i.kind!='legacy' AND t.term=? LIMIT 20", related.scope, related.subject, term)) ?? [])
+                if groupIDs.count >= 40 { break }
+            }
+            groupIDs.formUnion((try? strings("SELECT i.id FROM items i JOIN subjects s ON s.id=i.subject_id WHERE s.scope=? AND s.subject=? AND i.kind IN ('preference','task') AND i.invalidated_at IS NULL LIMIT 8", related.scope, related.subject)) ?? [])
+            if !requested.isEmpty {
+                let allowed = Set(requested.flatMap { name in (try? strings("SELECT ic.item_id FROM item_categories ic JOIN categories c ON c.id=ic.category_id JOIN subjects s ON s.id=c.subject_id WHERE s.scope=? AND s.subject=? AND c.name=?", related.scope, related.subject, name)) ?? [] })
+                groupIDs.formIntersection(allowed)
+            }
+            guard !groupIDs.isEmpty else { continue }
+            let groupMarks = groupIDs.map { _ in "?" }.joined(separator: ",")
+            let rows = (try? stored("SELECT i.id,s.subject,i.kind,i.text,i.keywords,i.importance,i.source_ids,i.updated_at,i.expires_at,i.invalidated_at,i.mention_count,i.last_mentioned FROM items i JOIN subjects s ON s.id=i.subject_id WHERE s.scope=? AND s.subject=? AND i.kind!='legacy' AND i.id IN (\(groupMarks))", values: [related.scope, related.subject] + groupIDs.map { $0 as Any })) ?? []
+            for var row in rows {
+                row.item = QQMemoryItem(id: row.item.id, subject: "PEER(群记忆)", kind: row.item.kind, text: row.item.text, keywords: row.item.keywords, importance: row.item.importance, sourceIDs: row.item.sourceIDs, updatedAt: row.item.updatedAt, expiresAt: row.item.expiresAt, invalidatedAt: row.item.invalidatedAt)
+                selected.append(row)
+            }
+        }
         let pool = selected.filter { row in
             if row.item.invalidatedAt == nil && row.item.expiresAt > now { return true }
             guard history, let ended = row.item.invalidatedAt else { return false }
@@ -265,13 +296,24 @@ final class QQMemoryStore: @unchecked Sendable {
     }
     private func eventHits(_ scope: String, query: String) -> [(text: String, at: Date)] {
         var result: [(String, Date)] = []
+        let related = peerGroupScopes(for: scope)
         for term in QQMemoryIndex.terms(query).prefix(12) {
             var statement: OpaquePointer?
-            guard sqlite3_prepare_v2(db, "SELECT e.text,e.at FROM events e JOIN event_terms t ON t.scope=e.scope AND t.event_id=e.id WHERE e.scope=? AND t.term=? LIMIT 8", -1, &statement, nil) == SQLITE_OK, let statement else { continue }
-            defer { sqlite3_finalize(statement) }
-            bind(statement, [scope, term])
-            while sqlite3_step(statement) == SQLITE_ROW {
-                result.append((columnText(statement, 0), Date(timeIntervalSince1970: sqlite3_column_double(statement, 1))))
+            if sqlite3_prepare_v2(db, "SELECT e.text,e.at FROM events e JOIN event_terms t ON t.scope=e.scope AND t.event_id=e.id WHERE e.scope=? AND t.term=? LIMIT 8", -1, &statement, nil) == SQLITE_OK, let statement {
+                defer { sqlite3_finalize(statement) }
+                bind(statement, [scope, term])
+                while sqlite3_step(statement) == SQLITE_ROW {
+                    result.append((columnText(statement, 0), Date(timeIntervalSince1970: sqlite3_column_double(statement, 1))))
+                }
+            }
+            for group in related {
+                var groupStmt: OpaquePointer?
+                guard sqlite3_prepare_v2(db, "SELECT e.text,e.at FROM events e JOIN subjects s ON s.id=e.subject_id JOIN event_terms t ON t.scope=e.scope AND t.event_id=e.id WHERE e.scope=? AND s.subject=? AND t.term=? LIMIT 4", -1, &groupStmt, nil) == SQLITE_OK, let groupStmt else { continue }
+                defer { sqlite3_finalize(groupStmt) }
+                bind(groupStmt, [group.scope, group.subject, term])
+                while sqlite3_step(groupStmt) == SQLITE_ROW {
+                    result.append((columnText(groupStmt, 0), Date(timeIntervalSince1970: sqlite3_column_double(groupStmt, 1))))
+                }
             }
         }
         return result
@@ -283,19 +325,35 @@ final class QQMemoryStore: @unchecked Sendable {
         try exec("UPDATE items SET mention_count=mention_count+1, last_mentioned=? WHERE id=? AND invalidated_at IS NULL", now, id)
         try exec("UPDATE categories SET mention_count=mention_count+1, last_mentioned=? WHERE id IN (SELECT category_id FROM item_categories WHERE item_id=?)", now, id)
     }
-    private func categories(_ scope: String, now: Date) -> [(subject: String, name: String, count: Int, heat: Double)] {
+    private func categories(_ scope: String, now: Date, includePeerGroups: Bool = false) -> [(subject: String, name: String, count: Int, heat: Double)] {
         var result: [(String, String, Int, Double)] = []
         var statement: OpaquePointer?
-        guard sqlite3_prepare_v2(db, "SELECT s.subject,c.name,c.item_count,c.mention_count,c.last_mentioned FROM categories c JOIN subjects s ON s.id=c.subject_id WHERE s.scope=?", -1, &statement, nil) == SQLITE_OK, let statement else { return [] }
-        defer { sqlite3_finalize(statement) }
-        bind(statement, [scope])
-        while sqlite3_step(statement) == SQLITE_ROW {
-            let subject = columnText(statement, 0)
-            let name = columnText(statement, 1)
-            let count = Int(sqlite3_column_int(statement, 2))
-            let mentions = Int(sqlite3_column_int(statement, 3))
-            let last = Date(timeIntervalSince1970: sqlite3_column_double(statement, 4))
-            result.append((subject, name, count, QQMemoryRank.categoryHeat(last: last, mentions: mentions, now: now)))
+        if sqlite3_prepare_v2(db, "SELECT s.subject,c.name,c.item_count,c.mention_count,c.last_mentioned FROM categories c JOIN subjects s ON s.id=c.subject_id WHERE s.scope=?", -1, &statement, nil) == SQLITE_OK, let statement {
+            defer { sqlite3_finalize(statement) }
+            bind(statement, [scope])
+            while sqlite3_step(statement) == SQLITE_ROW {
+                let subject = columnText(statement, 0)
+                let name = columnText(statement, 1)
+                let count = Int(sqlite3_column_int(statement, 2))
+                let mentions = Int(sqlite3_column_int(statement, 3))
+                let last = Date(timeIntervalSince1970: sqlite3_column_double(statement, 4))
+                result.append((subject, name, count, QQMemoryRank.categoryHeat(last: last, mentions: mentions, now: now)))
+            }
+        }
+        if includePeerGroups {
+            for related in peerGroupScopes(for: scope) {
+                var groupStmt: OpaquePointer?
+                guard sqlite3_prepare_v2(db, "SELECT c.name,c.item_count,c.mention_count,c.last_mentioned FROM categories c JOIN subjects s ON s.id=c.subject_id WHERE s.scope=? AND s.subject=? AND EXISTS (SELECT 1 FROM item_categories ic JOIN items i ON i.id=ic.item_id WHERE ic.category_id=c.id AND i.kind!='legacy' AND i.invalidated_at IS NULL)", -1, &groupStmt, nil) == SQLITE_OK, let groupStmt else { continue }
+                defer { sqlite3_finalize(groupStmt) }
+                bind(groupStmt, [related.scope, related.subject])
+                while sqlite3_step(groupStmt) == SQLITE_ROW {
+                    let name = columnText(groupStmt, 0)
+                    let count = Int(sqlite3_column_int(groupStmt, 1))
+                    let mentions = Int(sqlite3_column_int(groupStmt, 2))
+                    let last = Date(timeIntervalSince1970: sqlite3_column_double(groupStmt, 3))
+                    result.append(("PEER(群记忆)", name, count, QQMemoryRank.categoryHeat(last: last, mentions: mentions, now: now)))
+                }
+            }
         }
         return result.sorted { $0.3 > $1.3 }
     }
