@@ -134,16 +134,23 @@ struct QQPersonalityTests {
         #expect(QQMemoryBook.mentioner(account: "12345", sender: "12345") == "OWNER")
 
         let member = QQMemoryBook.subject(account: "12345", target: "group:99999", sender: "54321")
+        let memberB = QQMemoryBook.subject(account: "12345", target: "group:99999", sender: "54322")
         let groupRoster = config.boundRoster(for: message("66666", "合成甲今天去爬山"))
-        #expect(groupRoster.contains("[\(member)] 常用称呼：合成甲（本轮被提到）"))
-        #expect(groupRoster.contains("[指定用户2]") == false && groupRoster.contains("[" + QQMemoryBook.subject(account: "12345", target: "group:99999", sender: "54322") + "]"))
-        #expect(groupRoster.contains("不因名单主动提起这些人") && !groupRoster.contains("54321"))
+        #expect(groupRoster.contains("[关系卡片]"))
+        #expect(groupRoster.contains("[\(member)] 常用称呼：合成甲"))
+        #expect(groupRoster.contains("（本轮被提到）"))
+        // Unmentioned bound user b (54322) must be dynamically pruned from this turn's prompt.
+        #expect(!groupRoster.contains(memberB) && !groupRoster.contains("[指定用户2]"))
+        #expect(!groupRoster.contains("54321"))
         let peer = QQIncoming(id: "2", sender: "54322", target: "54322", group: false, text: "在吗", time: 0, replyTo: nil, images: [])
         let privateRoster = config.boundRoster(for: peer)
-        #expect(privateRoster.contains("[PEER]（就是当前发言者）") && privateRoster.contains("[合成甲] 常用称呼：合成甲"))
+        #expect(privateRoster.contains("[PEER]") && privateRoster.contains("（就是当前发言者）"))
+        #expect(!privateRoster.contains("合成甲"))
         let stranger = QQIncoming(id: "3", sender: "77777", target: "77777", group: false, text: "在吗", time: 0, replyTo: nil, images: [])
-        #expect(config.boundRoster(for: stranger).contains("[指定用户2]") && !config.boundRoster(for: stranger).contains("PEER"))
+        #expect(config.boundRoster(for: stranger).isEmpty)
         #expect(config.boundRoster(chat: "persona:" + a.id.uuidString).contains("[PEER] 常用称呼：合成甲"))
+        let anonymous = config.memoryAnonymousRoster(chat: "group:99999")
+        #expect(anonymous.contains(member) && anonymous.contains(memberB) && !anonymous.contains("合成甲") && !anonymous.contains("温柔"))
         #expect(QQConfig().boundRoster(for: stranger).isEmpty)
 
         for bad in [["甲"], ["合成\n甲"], [" 合成甲"], Array(repeating: "合成甲", count: 6)] {

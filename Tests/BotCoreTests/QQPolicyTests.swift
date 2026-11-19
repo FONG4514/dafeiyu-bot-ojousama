@@ -161,4 +161,38 @@ struct QQPolicyTests {
             #expect(throws: (any Error).self) { try c.validate() }
         }
     }
+    @Test func pokeVerifiesSelfTargetDirectionAndFreshness() {
+        let groupPoke: [String: Any] = ["post_type": "notice", "notice_type": "notify", "sub_type": "poke", "self_id": 12345, "user_id": 54321, "target_id": 12345, "group_id": 99999, "time": 1000.0]
+        let parsedGroup = QQPolicy.poke(groupPoke, selfID: "12345", since: 990, now: 1001)
+        #expect(parsedGroup?.key == "group:99999" && parsedGroup?.sender == "54321" && parsedGroup?.group == true)
+        var privatePoke = groupPoke; privatePoke.removeValue(forKey: "group_id")
+        let parsedPrivate = QQPolicy.poke(privatePoke, selfID: "12345", since: 990, now: 1001)
+        #expect(parsedPrivate?.key == "private:54321" && parsedPrivate?.group == false)
+        for (field, value) in [("target_id", 66666 as Any), ("user_id", 12345 as Any), ("self_id", 88888 as Any), ("sub_type", "lucky_king" as Any), ("time", 800.0 as Any)] {
+            var invalid = groupPoke; invalid[field] = value
+            #expect(QQPolicy.poke(invalid, selfID: "12345", since: 990, now: 1001) == nil)
+        }
+    }
+    @Test func groupIgnoredSendersAndSenderRulesValidate() throws {
+        var c = QQConfig(); c.expectedSelfID = "12345"
+        var group = QQTarget(number: "99999", name: "群", group: true)
+        group.effectiveIgnoredSenders = ["77777", "88888"]
+        c.targets = [group]
+        c.effectiveSenderRules = [
+            QQSenderRule(number: "54321", mentionOnly: true, dailyLimit: 10, cooldownSeconds: 30, proactiveWeight: 1),
+            QQSenderRule(number: "54322", mentionOnly: false, dailyLimit: nil, cooldownSeconds: nil, proactiveWeight: 3)
+        ]
+        try c.validate()
+        #expect(c.isGroupSenderIgnored("77777", in: group))
+        #expect(!c.allowsProactive(for: "77777", in: group))
+        #expect(!c.allowsProactive(for: "54321", in: group))
+        #expect(c.allowsProactive(for: "54322", in: group))
+        #expect(c.proactiveWeight(for: "54322", in: group) == 3)
+        #expect(c.proactiveWeight(for: "54321", in: group) == 0)
+        #expect(c.nonProactiveSenders(in: group) == Set(["77777", "88888", "54321"]))
+        var badGroup = c; badGroup.targets[0].effectiveIgnoredSenders = ["77777", "77777"]
+        #expect(throws: (any Error).self) { try badGroup.validate() }
+        var badRule = c; badRule.effectiveSenderRules = [QQSenderRule(number: "54321", proactiveWeight: 11)]
+        #expect(throws: (any Error).self) { try badRule.validate() }
+    }
 }

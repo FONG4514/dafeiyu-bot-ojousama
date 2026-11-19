@@ -133,8 +133,8 @@ private final class PersonalityModelProtocol: URLProtocol, @unchecked Sendable {
             }
             #expect(prompts.suffix(2).allSatisfy { $0.contains("你认识的熟人") && $0.contains("常用称呼：合成甲") && $0.contains("[MEMBER_") })
             #expect(prompts.prefix(2).allSatisfy { !$0.contains("你认识的熟人") })
-            #expect(prompts.prefix(2).allSatisfy { $0.contains("[熟人名单]") && $0.contains("（就是当前发言者）") })
-            #expect(prompts.suffix(2).allSatisfy { $0.contains("[熟人名单]") && $0.contains("（本轮被提到）") && $0.contains("不因名单主动提起这些人") })
+            #expect(prompts.prefix(2).allSatisfy { $0.contains("[关系卡片]") && $0.contains("（就是当前发言者）") })
+            #expect(prompts.suffix(2).allSatisfy { $0.contains("[关系卡片]") && $0.contains("（本轮被提到）") && $0.contains("不整段换成被提到者的人设") })
             #expect(prompts.prefix(2).allSatisfy { $0.contains("本轮记忆只属于群 99999") && $0.contains("chat=\"99999\"") })
             #expect(prompts.suffix(2).allSatisfy { $0.contains("chat=\"88888\"") && !$0.contains("chat=\"99999\"") })
             if mode == "proactive" { #expect(prompts.first?.contains("[QQ_PARTICIPATION]") == true) }
