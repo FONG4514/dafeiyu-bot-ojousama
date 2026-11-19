@@ -72,4 +72,18 @@ struct QQGroupContextTests {
         #expect(text.count <= 850); #expect(text.contains("消息31")); #expect(!text.contains("消息0"))
         for line in text.split(separator: "\n") { #expect(try JSONSerialization.jsonObject(with: Data(line.utf8)) is [String: String]) }
     }
+    @Test func filteredSendersStayAsBackgroundButDoNotCountAsUnansweredTopics() throws {
+        let botReply = event("1", "之前的话题答过了", 0, subject: "BOT")
+        let otherBotSubject = QQMemoryBook.subject(account: "12345", target: "group:99999", sender: "77777")
+        let otherBotMsg = event("2", "我是另一个群机器人刷屏", 1, subject: otherBotSubject)
+        let inputs: [String: QQIncoming] = [
+            "2": QQIncoming(id: "2", sender: "77777", target: "99999", group: true, text: "我是另一个群机器人刷屏", time: base.addingTimeInterval(60).timeIntervalSince1970, replyTo: nil, images: [QQIncomingImage(file: "bot.png", url: nil)])
+        ]
+        let onlyFiltered = try #require(QQGroupContext(events: [botReply, otherBotMsg], through: "2", messages: inputs, account: "12345", ignoredSenders: ["77777"]))
+        #expect(!onlyFiltered.hasUnansweredText)
+        #expect(!onlyFiltered.hasRecentMedia)
+        #expect(onlyFiltered.recentImages.isEmpty)
+        let timeline = onlyFiltered.context(characters: 3000)
+        #expect(timeline.contains("我是另一个群机器人刷屏") && timeline.contains("忽略名单发言"))
+    }
 }
