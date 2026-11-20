@@ -661,7 +661,7 @@ $('imageGenSave').addEventListener('click',async()=>{
 $('search').addEventListener('input',renderContacts);
 $('saveConnection').addEventListener('click',()=>act({action:'saveConnection',endpoint:$('endpoint').value.trim(),expectedSelfID:$('account').value.trim()}));
 if($('syncNapCat')) $('syncNapCat').addEventListener('click',async()=>{
-  const action={action:'syncNapCat',expectedSelfID:$('account').value.trim()||undefined,key:$('key').value,baseURL:$('apiBaseURL')?.value.trim()};
+  const action={action:'syncNapCat',expectedSelfID:$('account').value.trim()||undefined};
   if(await act(action)){$('token').value='';$('key').value='';}
 });
 $('connect').addEventListener('click',async()=>{if($('endpoint').value.trim()!==state.config.endpoint || $('account').value.trim()!==state.config.expectedSelfID){showActionError('请先保存地址与账号，再连接。输入已保留。');return;}const action={action:'connect',endpoint:$('endpoint').value.trim(),expectedSelfID:$('account').value.trim(),token:$('token').value,key:$('key').value};if(await act(action)){$('token').value='';$('key').value='';}});

@@ -164,8 +164,7 @@ import BotCore
                 case "saveConnection":
                     configurationSaved = engine.save(endpoint: request.endpoint, expectedSelfID: request.expectedSelfID)
                 case "syncNapCat":
-                    let key = (request.key ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
-                    configurationSaved = await engine.syncNapCatLogin(scannedSelfID: request.expectedSelfID, apiKey: key, baseURL: request.baseURL, connectAfterSync: !key.isEmpty)
+                    configurationSaved = await engine.syncNapCatLogin(scannedSelfID: request.expectedSelfID, connectAfterSync: true)
                 case "addArtworkArtist":
                     guard let input = request.artistInput else { throw AppFailure.message("缺少画师主页或 ID") }
                     await engine.addArtworkArtist(input)

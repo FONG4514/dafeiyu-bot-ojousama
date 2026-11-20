@@ -9,9 +9,7 @@ if errorlevel 1 (
   start "NapCat" /d "%LOCALAPPDATA%\DaFeiYu\NapCat" cmd /c "%LAUNCH%"
   powershell -NoProfile -Command "$deadline=(Get-Date).AddSeconds(90); while((Get-Date) -lt $deadline){ if(Test-NetConnection 127.0.0.1 -Port 3001 -InformationLevel Quiet -WarningAction SilentlyContinue){ exit 0 }; Start-Sleep -Seconds 2 }; exit 1" >nul 2>&1
   if errorlevel 1 (
-    echo NapCat 尚未在 3001 端口就绪。首次使用请在打开的窗口扫码，然后再运行一次本脚本。
-    pause
-    exit /b 1
+    echo NapCat 尚未在 3001 端口就绪。请在打开的 NapCat 窗口扫码，然后在面板点「扫码后自动读取配置」。
   )
 )
 "%NODE%" "%~dp0runtime\launch.mjs" client || goto :fail

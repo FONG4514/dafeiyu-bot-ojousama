@@ -49,7 +49,7 @@ try {
   const configEntries=await fs.readdir(configDir).catch(()=>[]);
   const hasOneBot=configEntries.some(name=>name==='onebot11.json'||(/^onebot11_\d+\.json$/.test(name)));
   if(!hasOneBot) {
-    const onebotConfig={network:{websocketServers:[{name:'dafeiyu-local',enable:true,host:'127.0.0.1',port:3001,messagePostFormat:'array',reportSelfMessage:true,token:randomBytes(32).toString('base64url'),enableForcePushEvent:true,debug:false,heartInterval:30000}]}};
+    const onebotConfig={network:{websocketServers:[{name:'dafeiyu-local',enable:true,host:'0.0.0.0',port:3001,messagePostFormat:'array',reportSelfMessage:true,token:randomBytes(32).toString('base64url'),enableForcePushEvent:true,debug:false,heartInterval:30000}]}};
     await fs.writeFile(path.join(configDir,'onebot11.json'),JSON.stringify(onebotConfig,null,2),{mode:0o600,flag:'wx'}).catch(error=>{if(error.code!=='EEXIST')throw error;});
   }
   if(process.platform==='darwin') {

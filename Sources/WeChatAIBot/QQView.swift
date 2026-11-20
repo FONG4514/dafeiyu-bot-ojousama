@@ -91,8 +91,8 @@ struct QQView: View {
                     }
                     Button("扫码后从 NapCat 读取") {
                         Task {
-                            let ok = await engine.syncNapCatLogin(scannedSelfID: editor.connectionDraft.value.expectedSelfID, apiKey: editor.temporaryKey, connectAfterSync: !editor.temporaryKey.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
-                            if ok { editor.connectionDraft.reset(QQConnectionForm(engine.config)); editor.temporaryKey = "" }
+                            let ok = await engine.syncNapCatLogin(scannedSelfID: editor.connectionDraft.value.expectedSelfID, connectAfterSync: true)
+                            if ok { editor.connectionDraft.reset(QQConnectionForm(engine.config)) }
                         }
                     }
                     Button("连接并核对账号") { Task { await engine.connect() } }
