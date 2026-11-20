@@ -1004,7 +1004,7 @@ struct QQSendJob: Identifiable, Sendable {
             } catch {
                 if fence.permits(epoch) {
                     record(target.id, .failed, "戳一戳回应未完成：" + error.localizedDescription)
-                    await enqueueDefaultReply(message: poke.asIncoming, target: target, epoch: epoch, proactive: false)
+                    if !modelCallBlocked(error) { await enqueueDefaultReply(message: poke.asIncoming, target: target, epoch: epoch, proactive: false) }
                 }
             }
         }
@@ -1389,11 +1389,16 @@ struct QQSendJob: Identifiable, Sendable {
                 heldOwnerEvents = heldOwnerEvents.filter { !$0.key.hasPrefix(message.key + ":") }
                 if fence.permits(epoch) {
                     record(target.id, .failed, error.localizedDescription)
-                    await enqueueDefaultReply(message: message, target: target, epoch: epoch, proactive: proactive)
+                    if !modelCallBlocked(error) { await enqueueDefaultReply(message: message, target: target, epoch: epoch, proactive: proactive) }
                 }
                 if let http = error as? HTTPFailure, [401, 402].contains(http.code), fence.permits(epoch) { pause() }
             }
         }
+    }
+    /// A call cap or spend cap stops the turn. Other failures still queue the default sentence.
+    private func modelCallBlocked(_ error: Error) -> Bool {
+        let text = (error as? LocalizedError)?.errorDescription ?? ""
+        return text.contains("模型调用已达上限") || text.contains("金额上限已到")
     }
     /// Image bytes are loaded before this. A failed turn still queues the default sentence.
     private func enqueueDefaultReply(message: QQIncoming, target: QQTarget, epoch: UInt64, proactive: Bool) async {
