@@ -13,6 +13,8 @@ struct QQMemorySummaryTests {
     @Test func fencedReplyAndFallbackClassification() {
         let p = QQPersona()
         #expect(!p.decode("```json\n{\"text\":\"你好呀\",\"emotion\":\"joy\",\"intensity\":1}\n```", input: "你好").isFallback)
-        #expect(p.decode("plain invalid", input: "你好").isFallback)
+        let plain = p.decode("plain invalid", input: "你好")
+        #expect(!plain.isFallback)
+        #expect(plain.text == "plain invalid")
     }
 }

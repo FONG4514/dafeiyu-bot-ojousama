@@ -138,15 +138,53 @@ public struct QQPersona: Codable, Equatable, Sendable {
         }
         let fallback = QQReply(text: limited(effectiveStyle == .teasing ? "本鱼这次回复卡住了，没接上；稍后再说一句？" : "这次回复没处理好，请稍后再试一次。"), emotion: .neutral, intensity: 0, isFallback: true)
         var normalized = raw.trimmingCharacters(in: .whitespacesAndNewlines)
-        if normalized.hasPrefix("```json"), normalized.hasSuffix("```") { normalized = String(normalized.dropFirst(7).dropLast(3)).trimmingCharacters(in: .whitespacesAndNewlines) }
-        guard normalized.utf8.count <= 16384, let data = normalized.data(using: .utf8),
+        if normalized.hasPrefix("```") {
+            normalized = normalized.dropFirst(normalized.hasPrefix("```json") ? 7 : 3).trimmingCharacters(in: .whitespacesAndNewlines)
+            if normalized.hasSuffix("```") { normalized = String(normalized.dropLast(3)).trimmingCharacters(in: .whitespacesAndNewlines) }
+        }
+        guard normalized.utf8.count <= 16384, !normalized.isEmpty else { return fallback }
+        if let reply = acceptedReply(in: normalized) { return reply }
+        guard !normalized.hasPrefix("{"), normalized.range(of: Self.forbiddenReply, options: .regularExpression) == nil else { return fallback }
+        return QQReply(text: limited(normalized), emotion: .neutral, intensity: 1)
+    }
+    /// Extra JSON fields are ignored. A missing or unknown emotion becomes neutral, and intensity is clamped to 0...3.
+    private func acceptedReply(in raw: String) -> QQReply? {
+        let slice: String
+        if let start = raw.firstIndex(of: "{"), let end = raw.lastIndex(of: "}"), start < end {
+            slice = String(raw[start...end])
+        } else {
+            slice = raw
+        }
+        guard let data = slice.data(using: .utf8),
               let fields = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
-              Set(fields.keys) == Set(["text", "emotion", "intensity"]),
-              let reply = try? JSONDecoder().decode(QQReply.self, from: data),
-              (0...3).contains(reply.intensity), !reply.text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return fallback }
-        let forbidden = #"(?i)(\[cq:|https?://|file://|base64://|sk-[a-z0-9]{12,}|<\|im_start\|>|\[system\]|system prompt|必须只输出一个\s*JSON)"#
-        guard reply.text.range(of: forbidden, options: .regularExpression) == nil else { return fallback }
-        return QQReply(text: limited(reply.text), emotion: reply.emotion, intensity: reply.intensity)
+              let text = fields["text"] as? String else { return nil }
+        let clean = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !clean.isEmpty, clean.range(of: Self.forbiddenReply, options: .regularExpression) == nil else { return nil }
+        let emotion = Self.emotion(fields["emotion"]) ?? .neutral
+        let intensity = min(3, max(0, Self.intensity(fields["intensity"]) ?? 1))
+        return QQReply(text: limited(clean), emotion: emotion, intensity: intensity)
+    }
+    private static let forbiddenReply = #"(?i)(\[cq:|https?://|file://|base64://|sk-[a-z0-9]{12,}|<\|im_start\|>|\[system\]|system prompt|必须只输出一个\s*JSON)"#
+    private static func emotion(_ value: Any?) -> QQEmotion? {
+        let raw = (value as? String)?.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() ?? ""
+        if let known = QQEmotion(rawValue: raw) { return known }
+        switch raw {
+        case "开心", "高兴", "快乐", "happy": return .joy
+        case "得意", "骄傲": return .smug
+        case "生气", "烦", "恼": return .annoyed
+        case "难过", "伤心", "悲伤": return .sad
+        case "困", "睡觉", "困倦": return .sleepy
+        case "慌", "害羞", "不好意思": return .flustered
+        case "调侃", "斗嘴", "逗": return .teasing
+        case "平静", "中性", "普通": return .neutral
+        default: return nil
+        }
+    }
+    private static func intensity(_ value: Any?) -> Int? {
+        if let number = value as? Int { return number }
+        if let number = value as? NSNumber { return number.intValue }
+        if let text = value as? String, let number = Int(text.trimmingCharacters(in: .whitespaces)) { return number }
+        return nil
     }
     private func limited(_ text: String) -> String {
         let clean = text.components(separatedBy: .whitespacesAndNewlines).filter { !$0.isEmpty }.joined(separator: " ")
