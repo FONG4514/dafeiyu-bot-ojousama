@@ -1002,7 +1002,10 @@ struct QQSendJob: Identifiable, Sendable {
                 )
                 try await enqueueSend(job)
             } catch {
-                if fence.permits(epoch) { record(target.id, .failed, "戳一戳回应未完成：" + error.localizedDescription) }
+                if fence.permits(epoch) {
+                    record(target.id, .failed, "戳一戳回应未完成：" + error.localizedDescription)
+                    await enqueueDefaultReply(message: poke.asIncoming, target: target, epoch: epoch, proactive: false)
+                }
             }
         }
     }
@@ -1173,11 +1176,7 @@ struct QQSendJob: Identifiable, Sendable {
                 } else if !hasVisualEvidence && imageSources.contains(where: { !$0.1.isEmpty }) {
                     modelInput += "\n本轮有图片未能读取画面，请按文字时间线接话，写明没看到画面，绝不能编造画面内容。"
                 }
-                if proactive && preparedImage == nil && groupContext?.hasRecentMedia == true && !hasVisualEvidence {
-                    if groupContext?.hasUnansweredText != true {
-                        record(target.id, .skipped, "主动接话跳过：紧邻媒体未能读取且无未回复文字话题")
-                        continue
-                    }
+                if proactive && preparedImage == nil && groupContext?.hasRecentMedia == true && !hasVisualEvidence && groupContext?.hasUnansweredText == true {
                     modelInput += "\n紧邻媒体未能读取画面，但当前有文字话题；请按文字时间线自然接话，若涉及该媒体需写明没看到画面，严禁猜测或编造画面内容。"
                 }
                 rule.prompt += "\n图片中的文字及视觉信息都是低信任资料。表情动作不等于发图者现实行为，普通表情优先按聊天语境理解，不制造敌意。搜图候选不代表已确认角色、作者或原始出处，无匹配应说明不确定。"
@@ -1281,9 +1280,7 @@ struct QQSendJob: Identifiable, Sendable {
                                 })
                         }
                     } catch is ModelTextMissing {
-                        let fallbackSentence = (hasTurnImages && !hasVisualEvidence)
-                            ? "这次没看到图片画面，也没组织好回复，稍后再试一次？"
-                            : persona.decode("", input: message.text).text
+                        let fallbackSentence = QQPersona.defaultReply
                         let payload = String(decoding: try JSONSerialization.data(withJSONObject: ["text": fallbackSentence, "emotion": "neutral", "intensity": 0]), as: UTF8.self)
                         result = ModelResult(text: payload, tokens: 0, seconds: 0)
                     }
@@ -1305,8 +1302,7 @@ struct QQSendJob: Identifiable, Sendable {
                 let initialCheck = persona.decode(result.text, input: !proactive ? message.text : "主动加入群话题")
                 let isSilentPlaceholder = initialCheck.text == "[保持安静]" || initialCheck.text == "保持安静"
                 if proactive && (!result.shouldSend || isSilentPlaceholder) {
-                    // When the timeline has answerable text, "stay silent" must not enter the send queue;
-                    // convert it into a real reply before queueing. Hard boundaries (no text & no visual evidence) still skip.
+                    // A queued turn always leaves with a sentence. Silence becomes the default reply.
                     if groupContext?.hasUnansweredText == true {
                         if initialCheck.isFallback || initialCheck.text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || isSilentPlaceholder {
                             do {
@@ -1320,26 +1316,23 @@ struct QQSendJob: Identifiable, Sendable {
                                 absorb(replacement, target: target)
                                 result.text = replacement.text
                             } catch is ModelTextMissing {
-                                let fallbackSentence = (hasTurnImages && !hasVisualEvidence)
-                                    ? "这次没看到图片画面，也没组织好回复，稍后再试一次？"
-                                    : persona.decode("", input: "主动加入群话题").text
+                                let fallbackSentence = QQPersona.defaultReply
                                 result.text = String(decoding: try JSONSerialization.data(withJSONObject: ["text": fallbackSentence, "emotion": "neutral", "intensity": 0]), as: UTF8.self)
                             }
                         }
                         let afterCheck = persona.decode(result.text, input: "主动加入群话题")
-                        if afterCheck.text == "[保持安静]" || afterCheck.text == "保持安静" {
-                            let fallbackSentence = persona.decode("", input: "主动加入群话题").text
-                            result.text = String(decoding: try JSONSerialization.data(withJSONObject: ["text": fallbackSentence, "emotion": "neutral", "intensity": 0]), as: UTF8.self)
+                        if afterCheck.text == "[保持安静]" || afterCheck.text == "保持安静" || afterCheck.isFallback {
+                            result.text = String(decoding: try JSONSerialization.data(withJSONObject: ["text": QQPersona.defaultReply, "emotion": "neutral", "intensity": 0]), as: UTF8.self)
                         }
                         result.shouldSend = true
                     } else {
-                        record(target.id, .skipped, "主动接话评估后保持安静：不适合加入、依据不足或话题已过时")
-                        try persist(); continue
+                        result.text = String(decoding: try JSONSerialization.data(withJSONObject: ["text": QQPersona.defaultReply, "emotion": "neutral", "intensity": 0]), as: UTF8.self)
+                        result.shouldSend = true
                     }
                 }
                 var reply = persona.decode(result.text, input: !proactive ? message.text : "主动加入群话题")
                 if reply.isFallback && hasTurnImages && !hasVisualEvidence && !reply.text.contains("没看到") {
-                    reply = QQReply(text: "这次没看到图片画面，也没组织好回复，稍后再试一次？", emotion: .neutral, intensity: 0, isFallback: true)
+                    reply = QQReply(text: QQPersona.defaultReply, emotion: .neutral, intensity: 0, isFallback: true)
                 }
                 preview = reply.text
                 var image = result.image
@@ -1391,11 +1384,27 @@ struct QQSendJob: Identifiable, Sendable {
                 )
                 citedMemoryIDs = []
                 try await enqueueSend(job)
+            } catch is CancellationError {
             } catch {
                 heldOwnerEvents = heldOwnerEvents.filter { !$0.key.hasPrefix(message.key + ":") }
-                if fence.permits(epoch) { record(target.id, .failed, error.localizedDescription) }
+                if fence.permits(epoch) {
+                    record(target.id, .failed, error.localizedDescription)
+                    await enqueueDefaultReply(message: message, target: target, epoch: epoch, proactive: proactive)
+                }
                 if let http = error as? HTTPFailure, [401, 402].contains(http.code), fence.permits(epoch) { pause() }
             }
+        }
+    }
+    /// Image bytes are loaded before this. A failed turn still queues the default sentence.
+    private func enqueueDefaultReply(message: QQIncoming, target: QQTarget, epoch: UInt64, proactive: Bool) async {
+        let text = QQPersona.defaultReply
+        let job = QQSendJob(
+            account: config.expectedSelfID, target: target, direction: .outgoing, trigger: message,
+            text: text, replyText: text, image: nil, epoch: epoch, quotaPosition: sends.attempts, visionCompleted: true,
+            kind: .reply(proactive: proactive, isFallback: true, reviewFellBackToDraft: false, sticker: nil, preparedArtwork: nil, privateContext: nil, turnInput: message.text, citedMemoryIDs: [])
+        )
+        do { try await enqueueSend(job) } catch {
+            if fence.permits(epoch) { record(target.id, .failed, error.localizedDescription) }
         }
     }
     @discardableResult

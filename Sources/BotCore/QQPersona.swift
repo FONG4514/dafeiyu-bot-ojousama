@@ -7,6 +7,8 @@ public enum QQStickerTrigger: String, Codable, CaseIterable, Sendable {
     case contextual, emotions, keywords
 }
 public struct QQPersona: Codable, Equatable, Sendable {
+    /// Sent when a turn must answer but the model gave nothing usable.
+    public static let defaultReply = "唔。。。。"
     public var style: QQPersonality?
     public var customName: String?
     public var customPrompt: String?
@@ -136,7 +138,7 @@ public struct QQPersona: Codable, Equatable, Sendable {
             let sharp = effectiveStyle == .tieba || (effectiveStyle == .teasing && banter > 0)
             return QQReply(text: limited(rebuff), emotion: sharp ? .annoyed : .neutral, intensity: sharp ? 3 : 0)
         }
-        let fallback = QQReply(text: limited(effectiveStyle == .teasing ? "本鱼这次回复卡住了，没接上；稍后再说一句？" : "这次回复没处理好，请稍后再试一次。"), emotion: .neutral, intensity: 0, isFallback: true)
+        let fallback = QQReply(text: Self.defaultReply, emotion: .neutral, intensity: 0, isFallback: true)
         var normalized = raw.trimmingCharacters(in: .whitespacesAndNewlines)
         if normalized.hasPrefix("```") {
             normalized = normalized.dropFirst(normalized.hasPrefix("```json") ? 7 : 3).trimmingCharacters(in: .whitespacesAndNewlines)
