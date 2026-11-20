@@ -976,7 +976,7 @@ struct QQSendJob: Identifiable, Sendable {
                     result = try await runWithAPIFallback(for: target, epoch: epoch, scope: poke.key) { apiConfig, apiKey in
                         try await modelClient.reply(key: apiKey, config: apiConfig, rule: rule, history: [], text: incoming.text, jsonOutput: true, thinkingEnabled: true, reserve: { [weak self] in
                             guard let self else { throw CancellationError() }
-                            try self.reserveModel(epoch, scope: poke.key, target: target)
+                            try await self.reserveModel(epoch, scope: poke.key, target: target)
                         })
                     }
                 } catch is ModelTextMissing {
@@ -1277,7 +1277,7 @@ struct QQSendJob: Identifiable, Sendable {
                             try await modelClient.reviewedQQReply(key: apiKey, config: apiConfig, rule: rule,
                                 history: message.group ? [] : Array((history[contextKey] ?? []).suffix(2)), text: modelInput, images: incomingImages, toolHandler: toolHandler, onlineToolsEnabled: !proactive && config.effectiveOnlineEnabled, imageGenerationEnabled: !proactive && config.effectiveImageGeneration.enabled, artworkEnabled: !proactive && config.effectiveArtwork.enabled && config.effectiveArtwork.agentEnabled, memoryToolEnabled: memoryTools, stickerOptions: stickerOptions, proactive: proactive && preparedImage == nil, reserve: { [weak self] in
                                     guard let self else { throw CancellationError() }
-                                    try self.reserveModel(epoch, scope: message.key, target: target)
+                                    try await self.reserveModel(epoch, scope: message.key, target: target)
                                 })
                         }
                     } catch is ModelTextMissing {
@@ -1313,7 +1313,7 @@ struct QQSendJob: Identifiable, Sendable {
                                 let replacement = try await runWithAPIFallback(for: target, epoch: epoch, scope: message.key) { apiConfig, apiKey in
                                     try await modelClient.reply(key: apiKey, config: apiConfig, rule: rule, history: [], text: modelInput, jsonOutput: true, thinkingEnabled: true, images: incomingImages, reserve: { [weak self] in
                                         guard let self else { throw CancellationError() }
-                                        try self.reserveModel(epoch, scope: message.key, target: target)
+                                        try await self.reserveModel(epoch, scope: message.key, target: target)
                                     })
                                 }
                                 try check(epoch, scope: message.key, target: target)
@@ -1770,7 +1770,7 @@ struct QQSendJob: Identifiable, Sendable {
         let route = resolvedAPIRoutes(for: target).first ?? (config.ai, key, "默认")
         let (plan, model) = try await modelClient.prepareQQImage(key: route.key.isEmpty ? key : route.key, config: route.config, text: request, proposed: proposed, proactive: proactive, reserve: { [weak self] in
             guard let self else { throw CancellationError() }
-            try self.reserveModel(epoch, scope: message.key, target: target)
+            try await self.reserveModel(epoch, scope: message.key, target: target)
         })
         try check(epoch, scope: message.key, target: target); absorb(model, target: target)
         if plan.action == .none { return nil }
@@ -1841,7 +1841,7 @@ struct QQSendJob: Identifiable, Sendable {
                     let roster = self.config.memoryAnonymousRoster(chat: chat) + self.config.memoryAccessPrompt(chat: chat) + (directory.isEmpty ? "" : "\n已有类别目录：\n" + directory)
                     let (delta, learned, suppliedIDs) = try await self.modelClient.learnQQMemory(key: route.key, config: route.config, events: batch, candidates: candidates, roster: roster, reserve: { [weak self] in
                         guard let self else { throw CancellationError() }
-                        try self.reserveModel(epoch, scope: target?.key ?? "", target: target, bound: bound)
+                        try await self.reserveModel(epoch, scope: target?.key ?? "", target: target, bound: bound)
                     })
                     try self.check(epoch, scope: target?.key ?? "", target: target, bound: bound)
                     guard self.config.effectiveMemoryEnabled, var current = self.memoryBooks[scope] else { throw CancellationError() }

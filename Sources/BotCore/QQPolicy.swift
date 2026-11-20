@@ -264,6 +264,19 @@ public struct QQIncoming: Equatable, Sendable {
     public var mentionsSelf = false
     public var isOwner = false
     public var mentionedUsers: [String] = []
+    public init(id: String, sender: String, target: String, group: Bool, text: String, time: Double, replyTo: String?, images: [QQIncomingImage], mentionsSelf: Bool = false, isOwner: Bool = false, mentionedUsers: [String] = []) {
+        self.id = id
+        self.sender = sender
+        self.target = target
+        self.group = group
+        self.text = text
+        self.time = time
+        self.replyTo = replyTo
+        self.images = images
+        self.mentionsSelf = mentionsSelf
+        self.isOwner = isOwner
+        self.mentionedUsers = mentionedUsers
+    }
     public var key: String { "\(group ? "group" : "private"):\(target)" }
     public var dedupKey: String { "\(key):\(id)" }
 }

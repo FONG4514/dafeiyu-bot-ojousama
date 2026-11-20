@@ -164,6 +164,12 @@ public struct QQReply: Codable, Equatable, Sendable {
     public let emotion: QQEmotion
     public let intensity: Int
     public var isFallback = false
+    public init(text: String, emotion: QQEmotion, intensity: Int, isFallback: Bool = false) {
+        self.text = text
+        self.emotion = emotion
+        self.intensity = intensity
+        self.isFallback = isFallback
+    }
     private enum CodingKeys: String, CodingKey { case text, emotion, intensity }
     public var wantsSticker: Bool { emotion != .neutral && intensity == 3 }
 }
