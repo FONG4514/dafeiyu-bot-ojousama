@@ -16,6 +16,7 @@ private final class BoundedDownload: NSObject, URLSessionDataDelegate, @unchecke
     private var response: URLResponse?
     private var oversized = false
     init(limit: Int) { self.limit = limit }
+    var allowRedirect: (@Sendable (URL) -> Bool)?
     func start(configuration: URLSessionConfiguration, request: URLRequest, continuation: CheckedContinuation<(Data, URLResponse), Error>) {
         lock.lock(); defer { lock.unlock() }
         if cancelled { continuation.resume(throwing: CancellationError()); return }
@@ -27,7 +28,10 @@ private final class BoundedDownload: NSObject, URLSessionDataDelegate, @unchecke
         lock.lock(); cancelled = true; let task = task; lock.unlock(); task?.cancel()
     }
     func urlSession(_ session: URLSession, task: URLSessionTask, willPerformHTTPRedirection response: HTTPURLResponse,
-                    newRequest request: URLRequest, completionHandler: @escaping (URLRequest?) -> Void) { completionHandler(nil) }
+                    newRequest request: URLRequest, completionHandler: @escaping (URLRequest?) -> Void) {
+        guard let url = request.url, allowRedirect?(url) == true else { completionHandler(nil); return }
+        completionHandler(request)
+    }
     func urlSession(_ session: URLSession, dataTask: URLSessionDataTask, didReceive response: URLResponse,
                     completionHandler: @escaping (URLSession.ResponseDisposition) -> Void) {
         self.response = response
@@ -49,8 +53,9 @@ private final class BoundedDownload: NSObject, URLSessionDataDelegate, @unchecke
 }
 
 extension URLSession {
-    func boundedData(for request: URLRequest, limit: Int) async throws -> (Data, URLResponse) {
+    func boundedData(for request: URLRequest, limit: Int, allowRedirect: (@Sendable (URL) -> Bool)? = nil) async throws -> (Data, URLResponse) {
         let download = BoundedDownload(limit: limit)
+        download.allowRedirect = allowRedirect
         return try await withTaskCancellationHandler {
             try await withCheckedThrowingContinuation { continuation in
                 download.start(configuration: configuration, request: request, continuation: continuation)

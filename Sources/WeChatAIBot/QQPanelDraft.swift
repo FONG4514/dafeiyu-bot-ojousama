@@ -30,6 +30,7 @@ struct QQReplyForm: Equatable {
     var persona: QQPersona
     var targets: [QQTarget]
     var senderRules: [QQSenderRule]
+    var apiProfiles: [QQAPIProfile]
     var onlineEnabled: Bool
     var visionEnabled: Bool
     var memoryEnabled: Bool
@@ -39,6 +40,7 @@ struct QQReplyForm: Equatable {
     init(_ config: QQConfig) {
         ai = config.ai; persona = config.effectivePersona; targets = config.targets
         senderRules = config.effectiveSenderRules
+        apiProfiles = config.effectiveAPIProfiles
         dailyLimit = String(config.ai.dailyLimit)
         sendDaily = String(config.ai.effectiveSendLimits.daily)
         perChatDaily = String(config.ai.effectiveSendLimits.perChatDaily)
@@ -63,6 +65,8 @@ struct QQPanelState {
     var token = ""
     var webToken = ""
     var temporaryKey = ""
+    var relayKey = ""
+    var backupRelayKey = ""
     var search = ""
     var imageZhipuKey = ""
     var imageCloudflareToken = ""
@@ -79,7 +83,7 @@ struct QQPanelState {
     var artworkDraft = QQPanelDraft(value: QQArtworkForm(QQArtworkConfig()))
     var artistInput = ""
     var hasCredentialDrafts: Bool {
-        !token.isEmpty || !temporaryKey.isEmpty || !imageZhipuKey.isEmpty || !imageCloudflareToken.isEmpty || !googleVisionKey.isEmpty
+        !token.isEmpty || !temporaryKey.isEmpty || !relayKey.isEmpty || !backupRelayKey.isEmpty || !imageZhipuKey.isEmpty || !imageCloudflareToken.isEmpty || !googleVisionKey.isEmpty
     }
     mutating func refresh(_ config: QQConfig) {
         connectionDraft.refresh(QQConnectionForm(config)); replyDraft.refresh(QQReplyForm(config))

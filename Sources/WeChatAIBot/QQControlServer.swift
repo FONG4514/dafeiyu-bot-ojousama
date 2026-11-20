@@ -143,7 +143,7 @@ import BotCore
                 engine.error = nil
                 // Pause/takeover must remain available even from an old page. Editing
                 // and starting require the exact configuration the editor observed.
-                let writesConfiguration = ["saveConnection", "connect", "save", "start", "add", "remove", "setPersona", "saveArtwork", "addArtworkArtist", "removeArtworkArtist", "saveImageGeneration", "saveVisualTools"]
+                let writesConfiguration = ["saveConnection", "connect", "syncNapCat", "save", "start", "add", "remove", "setPersona", "setTargetAPI", "saveArtwork", "addArtworkArtist", "removeArtworkArtist", "saveImageGeneration", "saveVisualTools"]
                 if writesConfiguration.contains(request.action) {
                     guard request.configurationRevision == currentConfigurationRevision() else {
                         throw AppFailure.message("配置已更新或页面版本过旧。草稿未提交，请载入最新配置后再操作。")
@@ -163,6 +163,9 @@ import BotCore
                         source: item.source, author: item.author, license: item.license, publicSharing: item.publicSharing)
                 case "saveConnection":
                     configurationSaved = engine.save(endpoint: request.endpoint, expectedSelfID: request.expectedSelfID)
+                case "syncNapCat":
+                    let key = (request.key ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+                    configurationSaved = await engine.syncNapCatLogin(scannedSelfID: request.expectedSelfID, apiKey: key, baseURL: request.baseURL, connectAfterSync: !key.isEmpty)
                 case "addArtworkArtist":
                     guard let input = request.artistInput else { throw AppFailure.message("缺少画师主页或 ID") }
                     await engine.addArtworkArtist(input)
@@ -213,6 +216,9 @@ import BotCore
                 case "setMemoryMode":
                     guard let target = request.target, let mode = request.memoryMode else { throw AppFailure.message("缺少会话或记忆模式") }
                     engine.setMemoryMode(mode, target: target)
+                case "setTargetAPI":
+                    guard let target = request.target, let profileID = request.apiProfileID else { throw AppFailure.message("缺少会话或 API 配置") }
+                    engine.setTargetAPIProfile(profileID, target: target)
                 case "exportMemory":
                     try engine.exportMemorySnapshot()
                 case "deleteMemoryItem":
@@ -230,6 +236,7 @@ import BotCore
                     if let persona = request.persona { updated.persona = persona }
                     if let senderPersonas = request.senderPersonas { updated.senderPersonas = senderPersonas }
                     if let senderRules = request.senderRules { updated.senderRules = senderRules }
+                    if let apiProfiles = request.apiProfiles { updated.apiProfiles = apiProfiles }
                     if let ignoredSenders = request.ignoredSenders {
                         for index in updated.targets.indices where updated.targets[index].group {
                             if let list = ignoredSenders[updated.targets[index].key] {
@@ -243,12 +250,18 @@ import BotCore
                     if let options = request.memoryOptions { updated.memoryOptions = options }
                     if let value = request.groupParticipationEnabled { updated.groupParticipationEnabled = value }
                     if let value = request.groupParticipationEvery { updated.groupParticipationEvery = value }
-                    try updated.validate(); engine.saveReplySettings(ai: updated.ai, persona: updated.effectivePersona, onlineEnabled: updated.effectiveOnlineEnabled, visionEnabled: updated.effectiveVisionEnabled, memoryEnabled: updated.effectiveMemoryEnabled, groupParticipationEnabled: updated.effectiveGroupParticipationEnabled, groupParticipationEvery: updated.effectiveGroupParticipationEvery, memoryOptions: updated.effectiveMemoryOptions, enabledTargets: request.enabled.map { Set($0) }, senderPersonas: request.senderPersonas, senderRules: request.senderRules, ignoredSenders: request.ignoredSenders)
+                    try updated.validate()
+                    if let profileKeys = request.apiProfileKeys {
+                        for (baseURL, key) in profileKeys where !key.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                            try engine.setAPIKey(key, for: baseURL, persist: request.persistRelayKey ?? false)
+                        }
+                    }
+                    engine.saveReplySettings(ai: updated.ai, persona: updated.effectivePersona, onlineEnabled: updated.effectiveOnlineEnabled, visionEnabled: updated.effectiveVisionEnabled, memoryEnabled: updated.effectiveMemoryEnabled, groupParticipationEnabled: updated.effectiveGroupParticipationEnabled, groupParticipationEvery: updated.effectiveGroupParticipationEvery, memoryOptions: updated.effectiveMemoryOptions, enabledTargets: request.enabled.map { Set($0) }, senderPersonas: request.senderPersonas, senderRules: request.senderRules, ignoredSenders: request.ignoredSenders, apiProfiles: request.apiProfiles, relayKey: request.relayKey ?? "", backupRelayKey: request.backupRelayKey ?? "", persistRelayKey: request.persistRelayKey ?? false)
                 case "start":
                     guard engine.connected, !engine.running, !engine.busy, !engine.runtimeBusy else { throw AppFailure.message("请先连接或暂停") }
                     let duration = request.singleReply == true ? 15 : (request.durationMinutes ?? 120)
                     guard (0...4320).contains(duration) else { throw AppFailure.message("运行时长必须为 0 至 4320 分钟") }
-                    guard request.ai == nil, request.persona == nil, request.senderPersonas == nil, request.senderRules == nil, request.ignoredSenders == nil, request.enabled == nil,
+                    guard request.ai == nil, request.persona == nil, request.senderPersonas == nil, request.senderRules == nil, request.ignoredSenders == nil, request.apiProfiles == nil, request.enabled == nil,
                           request.onlineEnabled == nil, request.visionEnabled == nil, request.memoryEnabled == nil,
                           request.memoryOptions == nil, request.groupParticipationEnabled == nil, request.groupParticipationEvery == nil else {
                         throw AppFailure.message("开始回复只使用已保存配置，请先单独保存范围与回复设置")
@@ -293,7 +306,8 @@ import BotCore
                 "runDeadline": engine.runDeadline.map { $0.timeIntervalSince1970 as Any } ?? NSNull(),
                 "calls": engine.usage.calls, "attempts": engine.sends.attempts, "confirmed": engine.sends.confirmed,
                 "groupMessageCounts": engine.groupMessageCounts,
-                "queued": engine.queuedCount, "queueCapacity": QQEngine.queueCapacity,
+                "queued": engine.queuedCount, "sendQueued": engine.sendQueuedCount, "queueCapacity": QQEngine.queueCapacity,
+                "apiCredentials": ["official": engine.hasAPIKey(for: QQAPIProfile.officialBaseURL), "current": engine.hasAPIKey(for: engine.config.ai.effectiveBaseURL), "ciallo": engine.hasAPIKey(for: QQAPIProfile.cialloBaseURL)],
                 "uncertain": engine.sends.uncertain, "rejected": engine.rejectedScopedEvents,
                 "contacts": engine.contacts.map { ["key": $0.id, "name": $0.name, "number": $0.number, "group": $0.group] as [String: Any] }]
             reply(connection, id: id, code: 200, data: try JSONSerialization.data(withJSONObject: object))
@@ -313,6 +327,7 @@ import BotCore
         var stickerImage: String?
         var configurationRevision: String?
         var endpoint: String?
+        var baseURL: String?
         var groupParticipationEnabled: Bool?
         var groupParticipationEvery: Int?
         var visualTools: QQVisualConfig?
@@ -328,6 +343,12 @@ import BotCore
         var expectedSelfID: String?
         var token: String?
         var key: String?
+        var relayKey: String?
+        var backupRelayKey: String?
+        var persistRelayKey: Bool?
+        var apiProfiles: [QQAPIProfile]?
+        var apiProfileKeys: [String: String]?
+        var apiProfileID: String?
         var target: String?
         var enabled: [String]?
         var ai: BotConfig?

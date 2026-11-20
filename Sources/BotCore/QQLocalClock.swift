@@ -1,5 +1,18 @@
 import Foundation
 
+/// Pulls a reply JSON object out of reasoning when the model left `content` empty.
+public enum QQReplyText {
+    public static func jsonObject(in reasoning: String?) -> String? {
+        guard let reasoning, let start = reasoning.firstIndex(of: "{"), let end = reasoning.lastIndex(of: "}"), start < end else { return nil }
+        let slice = String(reasoning[start...end])
+        guard slice.utf8.count <= 8000, let data = slice.data(using: .utf8),
+              let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+              let text = object["text"] as? String, !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return nil }
+        return slice
+    }
+}
+
+
 /// Local clock facts for a turn that asks the time or date. No city, path, or account.
 public enum QQLocalClock {
     public static func asks(_ text: String) -> Bool {

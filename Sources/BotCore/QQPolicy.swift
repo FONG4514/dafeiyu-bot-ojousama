@@ -8,6 +8,7 @@ public struct QQTarget: Codable, Equatable, Identifiable, Sendable {
     public var enabled = false
     public var personaStyle: QQPersonality?
     public var memoryMode: QQMemoryMode?
+    public var apiProfileID: String?
     public var ignoredSenders: [String]?
     public var effectiveMemoryMode: QQMemoryMode { memoryMode ?? .balanced }
     public var effectiveIgnoredSenders: [String] {
@@ -94,6 +95,20 @@ public struct QQConfig: Codable, Equatable, Sendable {
     public var effectiveSenderPersonas: [QQSenderPersona] { get { senderPersonas ?? [] } set { senderPersonas = newValue } }
     public var senderRules: [QQSenderRule]?
     public var effectiveSenderRules: [QQSenderRule] { get { senderRules ?? [] } set { senderRules = newValue.isEmpty ? nil : newValue } }
+    public var apiProfiles: [QQAPIProfile]?
+    public var effectiveAPIProfiles: [QQAPIProfile] { get { apiProfiles ?? [] } set { apiProfiles = newValue.isEmpty ? nil : newValue } }
+    public func apiProfile(for target: QQTarget?) -> QQAPIProfile? {
+        guard let id = target?.apiProfileID, !id.isEmpty else { return nil }
+        return effectiveAPIProfiles.first { $0.id == id }
+    }
+    public func apiConfig(for target: QQTarget?) -> BotConfig {
+        var resolved = ai
+        if let profile = apiProfile(for: target) {
+            resolved.effectiveBaseURL = profile.normalizedBaseURL
+            resolved.model = profile.model
+        }
+        return resolved
+    }
     public func senderRule(for sender: String) -> QQSenderRule? {
         effectiveSenderRules.first { $0.number == sender }
     }
@@ -226,6 +241,11 @@ public struct QQConfig: Codable, Equatable, Sendable {
               }) else {
             throw CoreError.invalid("按人接话设置最多 \(QQSenderRule.limit) 条，QQ 号必须有效且不重复，权重 1–10，上限 1–1000，间隔 1–3600 秒")
         }
+        guard effectiveAPIProfiles.count <= QQAPIProfile.limit,
+              Set(effectiveAPIProfiles.map(\.id)).count == effectiveAPIProfiles.count else {
+            throw CoreError.invalid("自定义 API 最多 \(QQAPIProfile.limit) 项，标识不能重复")
+        }
+        for profile in effectiveAPIProfiles { try profile.validate() }
         try effectiveMemoryOptions.validate()
         try effectiveImageGeneration.validate()
         guard (1...1000).contains(effectiveGroupParticipationEvery) else { throw CoreError.invalid("群主动接话间隔应为 1 至 1000 条消息") }
@@ -393,4 +413,127 @@ public struct QQIncomingImage: Equatable, Sendable {
 public struct QQQuotedContext: Equatable, Sendable {
     public let text: String
     public let images: [QQIncomingImage]
+}
+
+/// Local NapCat OneBot configuration bootstrap and post-scan reader.
+/// Creates a default config only when none exists; never overwrites existing files or fabricates missing tokens/UINs.
+public enum QQNapCatConfig {
+    public struct EffectiveConnection: Equatable, Sendable {
+        public let endpoint: String
+        public let token: String
+        public let selfID: String
+    }
+    public static func randomToken() -> String {
+        let alphabet = Array("abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789-_")
+        return String((0..<43).map { _ in alphabet[Int.random(in: 0..<alphabet.count)] })
+    }
+    /// Ensures a local OneBot config exists in `configDirectory`. Existing configs are read-only and never overwritten.
+    @discardableResult
+    public static func ensureOneBotConfig(in configDirectory: URL) throws -> (endpoint: String, token: String, created: Bool) {
+        let fm = FileManager.default
+        if !fm.fileExists(atPath: configDirectory.path) {
+            try fm.createDirectory(at: configDirectory, withIntermediateDirectories: true, attributes: [.posixPermissions: 0o700])
+        }
+        let entries = (try? fm.contentsOfDirectory(at: configDirectory, includingPropertiesForKeys: nil)) ?? []
+        let existingOneBot = entries.filter { $0.lastPathComponent == "onebot11.json" || ($0.lastPathComponent.hasPrefix("onebot11_") && $0.lastPathComponent.hasSuffix(".json")) }
+            .sorted { $0.lastPathComponent < $1.lastPathComponent }
+        if let file = existingOneBot.first {
+            let parsed = try parseOneBotFile(file)
+            return (parsed.endpoint, parsed.token, false)
+        }
+        let token = randomToken()
+        let payload: [String: Any] = [
+            "network": [
+                "websocketServers": [[
+                    "name": "dafeiyu-local",
+                    "enable": true,
+                    "host": "127.0.0.1",
+                    "port": 3001,
+                    "messagePostFormat": "array",
+                    "reportSelfMessage": true,
+                    "token": token,
+                    "enableForcePushEvent": true,
+                    "debug": false,
+                    "heartInterval": 30000
+                ]]
+            ]
+        ]
+        let data = try JSONSerialization.data(withJSONObject: payload, options: [.prettyPrinted, .sortedKeys])
+        let destination = configDirectory.appendingPathComponent("onebot11.json")
+        try data.write(to: destination, options: [.withoutOverwriting])
+        #if !os(Windows)
+        try? fm.setAttributes([.posixPermissions: 0o600], ofItemAtPath: destination.path)
+        #endif
+        return ("ws://127.0.0.1:3001", token, true)
+    }
+    /// Re-reads the effective config for the logged-in QQ account after QR scan. Fails closed if any field is missing.
+    public static func readEffectiveConfig(in configDirectory: URL, scannedSelfID: String? = nil) throws -> EffectiveConnection {
+        let fm = FileManager.default
+        guard fm.fileExists(atPath: configDirectory.path) else {
+            throw CoreError.invalid("未找到 NapCat 配置目录，无法读取 OneBot 连接信息")
+        }
+        let entries = (try? fm.contentsOfDirectory(at: configDirectory, includingPropertiesForKeys: [.contentModificationDateKey])) ?? []
+        var detectedID = (scannedSelfID ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+        if !QQConfig.validID(detectedID) {
+            let webuiFile = configDirectory.appendingPathComponent("webui.json")
+            if let data = try? Data(contentsOf: webuiFile),
+               let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+               let autoAccount = QQPolicy.identifier(obj["autoLoginAccount"]), QQConfig.validID(autoAccount) {
+                detectedID = autoAccount
+            }
+        }
+        let accountFiles = entries.compactMap { url -> (url: URL, uin: String, mtime: Date)? in
+            let name = url.lastPathComponent
+            guard name.hasPrefix("onebot11_"), name.hasSuffix(".json") else { return nil }
+            let uin = String(name.dropFirst("onebot11_".count).dropLast(".json".count))
+            guard QQConfig.validID(uin) else { return nil }
+            let mtime = (try? url.resourceValues(forKeys: [.contentModificationDateKey]).contentModificationDate) ?? .distantPast
+            return (url, uin, mtime)
+        }.sorted { $0.mtime == $1.mtime ? $0.uin > $1.uin : $0.mtime > $1.mtime }
+        if !QQConfig.validID(detectedID), let latest = accountFiles.first {
+            detectedID = latest.uin
+        }
+        guard QQConfig.validID(detectedID) else {
+            throw CoreError.invalid("尚未读取到扫码登录的 QQ 号；请先完成扫码登录，程序不会编造 QQ 号")
+        }
+        let specificFile = configDirectory.appendingPathComponent("onebot11_\(detectedID).json")
+        let fallbackFile = configDirectory.appendingPathComponent("onebot11.json")
+        let targetFile: URL
+        if fm.fileExists(atPath: specificFile.path) { targetFile = specificFile }
+        else if fm.fileExists(atPath: fallbackFile.path) { targetFile = fallbackFile }
+        else { throw CoreError.invalid("未找到当前账号（\(detectedID)）生效的 OneBot 配置文件") }
+        let parsed = try parseOneBotFile(targetFile)
+        return EffectiveConnection(endpoint: parsed.endpoint, token: parsed.token, selfID: detectedID)
+    }
+    private static func parseOneBotFile(_ file: URL) throws -> (endpoint: String, token: String) {
+        guard let data = try? Data(contentsOf: file),
+              let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+              let network = object["network"] as? [String: Any],
+              let servers = network["websocketServers"] as? [[String: Any]] else {
+            throw CoreError.invalid("OneBot 配置文件格式无效或缺少 websocketServers")
+        }
+        guard let server = servers.first(where: { ($0["enable"] as? Bool) != false }) ?? servers.first else {
+            throw CoreError.invalid("OneBot 配置中未找到正向 WebSocket 服务项")
+        }
+        guard (server["enable"] as? Bool) != false else {
+            throw CoreError.invalid("OneBot 正向 WebSocket 尚未启用")
+        }
+        let host = (server["host"] as? String ?? "127.0.0.1").trimmingCharacters(in: .whitespacesAndNewlines)
+        guard ["127.0.0.1", "0.0.0.0", "localhost"].contains(host) else {
+            throw CoreError.invalid("OneBot WebSocket 必须绑定本机地址")
+        }
+        let port = (server["port"] as? Int) ?? Int(QQPolicy.identifier(server["port"]) ?? "") ?? 0
+        guard (1...65535).contains(port) else {
+            throw CoreError.invalid("OneBot WebSocket 端口无效")
+        }
+        let format = (server["messagePostFormat"] as? String) ?? "array"
+        guard format == "array" else {
+            throw CoreError.invalid("OneBot 消息格式必须为 array（数组消息段）")
+        }
+        let token = (server["token"] as? String ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !token.isEmpty, !token.contains(where: { $0.isWhitespace }) else {
+            throw CoreError.invalid("OneBot 配置缺少有效令牌；程序不会编造令牌")
+        }
+        return ("ws://127.0.0.1:\(port)", token)
+    }
 }

@@ -5,7 +5,7 @@ import os from 'node:os';
 import {fileURLToPath} from 'node:url';
 import {execFile,spawn} from 'node:child_process';
 import {promisify} from 'node:util';
-import {createHash} from 'node:crypto';
+import {createHash,randomBytes} from 'node:crypto';
 
 const run=promisify(execFile),root=path.dirname(fileURLToPath(import.meta.url));
 const manifest=JSON.parse(await fs.readFile(path.join(root,'napcat','manifest.json'),'utf8'));
@@ -43,6 +43,14 @@ try {
     metadata.version=manifest.napcat.version;await fs.writeFile(packageFile,JSON.stringify(metadata,null,2));
     await fs.copyFile(path.join(root,'napcat','NapCat-LICENSE.txt'),path.join(staging,'NapCat-LICENSE.txt'));
     await fs.rename(staging,destination);staging=undefined;
+  }
+  const configDir=path.join(destination,'config');
+  await fs.mkdir(configDir,{recursive:true,mode:0o700});
+  const configEntries=await fs.readdir(configDir).catch(()=>[]);
+  const hasOneBot=configEntries.some(name=>name==='onebot11.json'||(/^onebot11_\d+\.json$/.test(name)));
+  if(!hasOneBot) {
+    const onebotConfig={network:{websocketServers:[{name:'dafeiyu-local',enable:true,host:'127.0.0.1',port:3001,messagePostFormat:'array',reportSelfMessage:true,token:randomBytes(32).toString('base64url'),enableForcePushEvent:true,debug:false,heartInterval:30000}]}};
+    await fs.writeFile(path.join(configDir,'onebot11.json'),JSON.stringify(onebotConfig,null,2),{mode:0o600,flag:'wx'}).catch(error=>{if(error.code!=='EEXIST')throw error;});
   }
   if(process.platform==='darwin') {
     const tools=path.join(root,'napcat','mac-tools');

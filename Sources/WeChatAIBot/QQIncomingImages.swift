@@ -20,17 +20,21 @@ struct QQIncomingImages {
     static func allowedURL(_ value: String?) -> URL? {
         guard let value, value.utf8.count <= 8192, var url = URLComponents(string: value),
               ["http", "https"].contains(url.scheme ?? ""), url.user == nil, url.password == nil, url.port == nil,
-              ["multimedia.nt.qq.com.cn", "gchat.qpic.cn", "c2cpicdw.qpic.cn", "q.qlogo.cn"].contains(url.host ?? "") else { return nil }
+              let host = url.host?.lowercased(), Self.allowedHost(host) else { return nil }
         url.scheme = "https"; url.fragment = nil
         return url.url
+    }
+    private static func allowedHost(_ host: String) -> Bool {
+        if host == "multimedia.nt.qq.com.cn" { return true }
+        return ["qpic.cn", "qlogo.cn", "qq.com", "qq.com.cn"].contains { host == $0 || host.hasSuffix("." + $0) }
     }
     func load(_ value: String?, maxFrames: Int = 6) async throws -> [Data] {
         guard let url = Self.allowedURL(value) else { throw AppFailure.message("图片下载地址不受支持") }
         var request = URLRequest(url: url); request.timeoutInterval = 15
         #if os(Linux) || os(Windows)
-        let (linuxData, response) = try await session.boundedData(for: request, limit: 8_000_000)
+        let (linuxData, response) = try await session.boundedData(for: request, limit: 8_000_000) { QQIncomingImages.allowedURL($0.absoluteString) != nil }
         #else
-        let (bytes, response) = try await session.bytes(for: request, delegate: QQImageNoRedirect())
+        let (bytes, response) = try await session.bytes(for: request, delegate: QQImageRedirect())
         #endif
         guard let http = response as? HTTPURLResponse, http.statusCode == 200, response.expectedContentLength <= 8_000_000 else { throw AppFailure.message("图片暂时无法下载") }
         var data = Data()
@@ -43,7 +47,22 @@ struct QQIncomingImages {
         }
         #endif
         try Task.checkCancellation()
-        return try Self.frames(data, maxFrames: maxFrames)
+        return try Self.usableFrames(data, maxFrames: maxFrames)
+    }
+    /// Pillow can sample animation. A still JPEG, PNG, GIF, or WebP can go to the model without it.
+    static func usableFrames(_ data: Data, maxFrames: Int = 6) throws -> [Data] {
+        if let frames = try? frames(data, maxFrames: maxFrames), !frames.isEmpty { return frames }
+        guard let original = originalImage(data) else { throw AppFailure.message("图片格式或尺寸不受支持") }
+        return [original]
+    }
+    static func originalImage(_ data: Data) -> Data? {
+        guard data.count <= 8_000_000 else { return nil }
+        let header = [UInt8](data.prefix(12))
+        let png = header.count >= 8 && Array(header[0..<8]) == [0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A]
+        let gif = header.count >= 6 && (Array(header[0..<6]) == Array("GIF87a".utf8) || Array(header[0..<6]) == Array("GIF89a".utf8))
+        let webp = header.count >= 12 && Array(header[0..<4]) == Array("RIFF".utf8) && Array(header[8..<12]) == Array("WEBP".utf8)
+        let jpeg = header.count >= 3 && header[0] == 0xFF && header[1] == 0xD8 && header[2] == 0xFF
+        return png || gif || webp || jpeg ? data : nil
     }
     static func frames(_ data: Data, maxFrames: Int = 6) throws -> [Data] {
         #if os(Linux) || os(Windows)
@@ -90,7 +109,10 @@ struct QQIncomingImages {
         #endif
     }
 }
-private final class QQImageNoRedirect: NSObject, URLSessionTaskDelegate {
+private final class QQImageRedirect: NSObject, URLSessionTaskDelegate {
     func urlSession(_ session: URLSession, task: URLSessionTask, willPerformHTTPRedirection response: HTTPURLResponse,
-                    newRequest request: URLRequest, completionHandler: @escaping (URLRequest?) -> Void) { completionHandler(nil) }
+                    newRequest request: URLRequest, completionHandler: @escaping (URLRequest?) -> Void) {
+        guard let url = request.url, QQIncomingImages.allowedURL(url.absoluteString) != nil else { completionHandler(nil); return }
+        completionHandler(request)
+    }
 }

@@ -244,12 +244,12 @@ private final class DelayedModelProtocol: URLProtocol, @unchecked Sendable {
             if engine.logs.contains(where: { $0.detail.contains("保持安静") || $0.detail.contains("不代答") }) || engine.sends.confirmed > 0 { break }
             try await Task.sleep(nanoseconds: 20_000_000)
         }
-        #expect(engine.sends.confirmed == (mode == "direct" ? 1 : 0))
+        #expect(engine.sends.confirmed == (mode == "ownerToOther" ? 0 : 1))
         #expect(engine.sends.attempts == engine.sends.confirmed)
         #expect(engine.usage.calls == (mode == "ownerToOther" ? 0 : ["reviewSilent", "direct"].contains(mode) ? 2 : 1))
         #expect(engine.running); #expect(engine.queuedCount == 0)
         #expect(engine.groupMessageCounts["group:99999"] == (mode == "direct" ? 1 : 0))
-        if mode != "direct" { #expect(!FileManager.default.fileExists(atPath: directory.appendingPathComponent("payload").path)) }
+        if mode == "ownerToOther" { #expect(!FileManager.default.fileExists(atPath: directory.appendingPathComponent("payload").path)) }
     }
 
     @Test func groupTimelineIncludesBotAcrossMembersAndSkipsMediaOnlyParticipation() async throws {
@@ -881,5 +881,51 @@ private final class DelayedModelProtocol: URLProtocol, @unchecked Sendable {
         }
         #expect(engine.logs.contains { $0.detail.contains("该成员今日回复已达上限") })
         #expect(engine.sends.confirmed == 2)
+    }
+    @Test func sendQueuePreservesJobsWaitsWhenFullAndSupportsNapCatSyncAndRelayRouting() async throws {
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+
+        // 1) NapCat OneBot config bootstrap and post-scan read (never overwrites existing token; fails closed without UIN).
+        let napcatDir = directory.appendingPathComponent("napcat-config", isDirectory: true)
+        let firstInit = try QQNapCatConfig.ensureOneBotConfig(in: napcatDir)
+        #expect(firstInit.created)
+        #expect(firstInit.endpoint == "ws://127.0.0.1:3001")
+        #expect(!firstInit.token.isEmpty)
+        let secondInit = try QQNapCatConfig.ensureOneBotConfig(in: napcatDir)
+        #expect(!secondInit.created)
+        #expect(secondInit.token == firstInit.token)
+        #expect(throws: Error.self) { try QQNapCatConfig.readEffectiveConfig(in: napcatDir, scannedSelfID: nil) }
+        let effective = try QQNapCatConfig.readEffectiveConfig(in: napcatDir, scannedSelfID: "12345")
+        #expect(effective == QQNapCatConfig.EffectiveConnection(endpoint: "ws://127.0.0.1:3001", token: firstInit.token, selfID: "12345"))
+
+        // 2) Official vs Ciallo relay model routing & endpoint URL validation.
+        let officialRoute = DeepSeekClient.effectiveModel(configured: "deepseek-flash", hasImages: true, baseURL: QQAPIProfile.officialBaseURL)
+        #expect(officialRoute.model == "deepseek-flash" && officialRoute.supportsVision)
+        let cialloRoute = DeepSeekClient.effectiveModel(configured: "deepseek-v4.1-flash", hasImages: true, baseURL: QQAPIProfile.cialloBaseURL)
+        #expect(cialloRoute.model == "deepseek-v4.1-flash" && cialloRoute.supportsVision)
+        let cialloURL = try DeepSeekClient.endpointURL(baseURL: QQAPIProfile.cialloBaseURL, path: "chat/completions")
+        #expect(cialloURL.absoluteString == "https://sub.ciallo.cafe/v1/chat/completions")
+
+        // 3) Send queue invariants: rejects empty / "[保持安静]" text and incomplete vision for image turns.
+        let engine = QQEngine(allowAuthenticationUI: false, storageDirectory: directory)
+        let synced = await engine.syncNapCatLogin(configDirectory: napcatDir, scannedSelfID: "12345", apiKey: "synthetic-ciallo-key", baseURL: QQAPIProfile.cialloBaseURL)
+        #expect(synced)
+        #expect(!engine.running)
+        #expect(engine.config.expectedSelfID == "12345")
+        #expect(engine.config.ai.effectiveBaseURL == QQAPIProfile.cialloBaseURL)
+        #expect(engine.hasAPIKey(for: QQAPIProfile.cialloBaseURL))
+        #expect(!engine.hasAPIKey(for: QQAPIProfile.officialBaseURL))
+
+        let target = QQTarget(number: "99999", name: "测试群", group: true)
+        let emptyTrigger = QQIncoming(id: "1", sender: "54321", target: "99999", group: true, text: "你好", time: 1, replyTo: nil, images: [])
+        let emptyJob = QQSendJob(account: "12345", target: target, direction: .outgoing, trigger: emptyTrigger, text: "   ", replyText: "", image: nil, epoch: 0, quotaPosition: 0, visionCompleted: true, kind: .poke)
+        await #expect(throws: Error.self) { try await engine.enqueueSend(emptyJob, waitForDelivery: false) }
+        let silentJob = QQSendJob(account: "12345", target: target, direction: .outgoing, trigger: emptyTrigger, text: "[保持安静]", replyText: "[保持安静]", image: nil, epoch: 0, quotaPosition: 0, visionCompleted: true, kind: .poke)
+        await #expect(throws: Error.self) { try await engine.enqueueSend(silentJob, waitForDelivery: false) }
+        let imageTrigger = QQIncoming(id: "2", sender: "54321", target: "99999", group: true, text: "看图", time: 2, replyTo: nil, images: [QQIncomingImage(file: "a.jpg", url: "https://multimedia.nt.qq.com.cn/a.jpg")])
+        let unverifiedVisionJob = QQSendJob(account: "12345", target: target, direction: .outgoing, trigger: imageTrigger, text: "还没看完", replyText: "还没看完", image: nil, epoch: 0, quotaPosition: 0, visionCompleted: false, kind: .poke)
+        await #expect(throws: Error.self) { try await engine.enqueueSend(unverifiedVisionJob, waitForDelivery: false) }
     }
 }

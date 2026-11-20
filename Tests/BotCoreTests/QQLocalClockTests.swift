@@ -20,4 +20,9 @@ struct QQLocalClockTests {
         #expect(!prompt.contains("Shanghai"))
         #expect(!prompt.contains("市区"))
     }
+    @Test func emptyReasoningCanStillCarryTheReplyJSON() {
+        let recovered = QQReplyText.jsonObject(in: "先想一下。{\"text\":\"没看到图。\",\"emotion\":\"teasing\",\"intensity\":1}")
+        #expect(recovered?.contains("没看到图。") == true)
+        #expect(QQReplyText.jsonObject(in: "只有分析，没有 JSON。EOF") == nil)
+    }
 }

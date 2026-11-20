@@ -42,6 +42,11 @@ struct QQIncomingImagesTests {
     @Test func restrictsSourceAndDecodesToBoundedJPEG() throws {
         for url in ["file:///secret", "https://127.0.0.1/x", "https://multimedia.nt.qq.com.cn.evil.org/a", "https://x:y@gchat.qpic.cn/a", "https://gchat.qpic.cn:123/a"] { #expect(QQIncomingImages.allowedURL(url) == nil) }
         #expect(QQIncomingImages.allowedURL("http://gchat.qpic.cn/a")?.scheme == "https")
+        #expect(QQIncomingImages.allowedURL("https://pic.qpic.cn/a") != nil)
+        #expect(QQIncomingImages.allowedURL("https://thirdqq.qlogo.cn/a") != nil)
+        let jpeg = Data([0xFF, 0xD8, 0xFF, 0xE0])
+        #expect(try QQIncomingImages.usableFrames(jpeg) == [jpeg])
+        #expect(QQIncomingImages.originalImage(Data("not an image".utf8)) == nil)
         #expect(throws: (any Error).self) { try QQIncomingImages.frames(Data("invalid".utf8)) }
         let root = URL(fileURLWithPath: #filePath).deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent().appendingPathComponent("Resources/QQStickers")
         let library = QQStickerLibrary(directory: root)

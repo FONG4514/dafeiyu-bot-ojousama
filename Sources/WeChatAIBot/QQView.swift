@@ -23,8 +23,12 @@ struct QQView: View {
                 visionEnabled: value.visionEnabled, memoryEnabled: value.memoryEnabled,
                 groupParticipationEnabled: value.groupParticipationEnabled, groupParticipationEvery: value.groupParticipationEvery,
                 memoryOptions: value.memoryOptions, enabledTargets: Set(value.targets.filter(\.enabled).map(\.key)),
-                senderRules: value.senderRules, ignoredSenders: ignored)
-            if engine.error == nil { editor.replyDraft.reset(QQReplyForm(engine.config)) }
+                senderRules: value.senderRules, ignoredSenders: ignored, apiProfiles: value.apiProfiles,
+                relayKey: editor.relayKey, backupRelayKey: editor.backupRelayKey)
+            if engine.error == nil {
+                editor.replyDraft.reset(QQReplyForm(engine.config))
+                editor.relayKey = ""; editor.backupRelayKey = ""
+            }
         } catch { engine.error = error.localizedDescription }
     }
     private var statusSummary: some View {
@@ -84,6 +88,12 @@ struct QQView: View {
                         let saved = engine.save(token: editor.token, endpoint: editor.connectionDraft.value.endpoint, expectedSelfID: editor.connectionDraft.value.expectedSelfID)
                         if saved { editor.connectionDraft.reset(QQConnectionForm(engine.config)) }
                         if engine.error == nil { editor.token = "" }
+                    }
+                    Button("扫码后从 NapCat 读取") {
+                        Task {
+                            let ok = await engine.syncNapCatLogin(scannedSelfID: editor.connectionDraft.value.expectedSelfID, apiKey: editor.temporaryKey, connectAfterSync: !editor.temporaryKey.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+                            if ok { editor.connectionDraft.reset(QQConnectionForm(engine.config)); editor.temporaryKey = "" }
+                        }
                     }
                     Button("连接并核对账号") { Task { await engine.connect() } }
                         .buttonStyle(PanelButtonStyle(kind: .primary))
@@ -396,6 +406,31 @@ struct QQView: View {
                 GroupBox {
                     VStack(alignment: .leading, spacing: 20) {
                         HStack(spacing: 20) {
+                            Picker("模型服务", selection: Binding(get: {
+                                let url = editor.replyDraft.value.ai.effectiveBaseURL
+                                if url == QQAPIProfile.officialBaseURL { return QQAPIPreset.deepseek }
+                                if url == QQAPIProfile.cialloBaseURL { return QQAPIPreset.ciallo }
+                                return QQAPIPreset.custom
+                            }, set: { preset in
+                                switch preset {
+                                case .deepseek:
+                                    editor.replyDraft.value.ai.effectiveBaseURL = QQAPIProfile.officialBaseURL
+                                    if editor.replyDraft.value.ai.model == "deepseek-v4.1-flash" || editor.replyDraft.value.ai.model.isEmpty {
+                                        editor.replyDraft.value.ai.model = "deepseek-flash"
+                                    }
+                                case .ciallo:
+                                    editor.replyDraft.value.ai.effectiveBaseURL = QQAPIProfile.cialloBaseURL
+                                    if editor.replyDraft.value.ai.model == "deepseek-flash" || editor.replyDraft.value.ai.model.isEmpty {
+                                        editor.replyDraft.value.ai.model = "deepseek-v4.1-flash"
+                                    }
+                                case .custom:
+                                    if editor.replyDraft.value.ai.isOfficialAPI {
+                                        editor.replyDraft.value.ai.baseURL = "https://"
+                                    }
+                                }
+                            })) {
+                                ForEach(QQAPIPreset.allCases, id: \.self) { preset in Text(preset.title).tag(preset) }
+                            }
                             LabeledContent("模型") { TextField("模型", text: $editor.replyDraft.value.ai.model) }.labeledContentStyle(PanelLabeledContentStyle())
                             Button("复制微信 AI 参数") {
                                 var ai = wechat.config; ai.chats = []
@@ -403,6 +438,12 @@ struct QQView: View {
                                 editor.replyDraft.value.dailyLimit = String(ai.dailyLimit)
                                 editor.replyDraft.value.sendDaily = String(ai.effectiveSendLimits.daily)
                                 editor.replyDraft.value.perChatDaily = String(ai.effectiveSendLimits.perChatDaily)
+                            }
+                        }
+                        if !editor.replyDraft.value.ai.isOfficialAPI {
+                            HStack(spacing: 20) {
+                                LabeledContent("中转站地址") { TextField("https://sub.ciallo.cafe/v1", text: Binding(get: { editor.replyDraft.value.ai.effectiveBaseURL }, set: { editor.replyDraft.value.ai.effectiveBaseURL = $0 })) }.labeledContentStyle(PanelLabeledContentStyle())
+                                LabeledContent("中转站 Key") { SecureField("单独填写中转站密钥（留空保留）", text: $editor.relayKey) }.labeledContentStyle(PanelLabeledContentStyle())
                             }
                         }
                         HStack(spacing: 24) {

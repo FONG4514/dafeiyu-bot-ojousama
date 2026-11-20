@@ -104,6 +104,10 @@ final class LocalStore {
     }
 }
 
+struct ModelTextMissing: Error, LocalizedError {
+    var finish: String
+    var errorDescription: String? { "模型已结束但没有正文（\(finish)），本次不发送" }
+}
 struct ModelResult: Sendable {
     var text: String
     var tokens: Int
@@ -120,6 +124,7 @@ struct ModelResult: Sendable {
     var toolContext = ""
     var stickerID: String? = nil
     var imageStatus: String? = nil
+    var reviewFellBackToDraft = false
 }
 struct DeepSeekClient {
     private let base = URL(string: "https://api.deepseek.com")!
@@ -135,19 +140,28 @@ struct DeepSeekClient {
         guard !data.isEmpty else { return 0 }
         return min(1024, max(64, (data.count + 767) / 768))
     }
-    static func effectiveModel(configured: String, hasImages: Bool) -> (model: String, supportsVision: Bool) {
+    static func effectiveModel(configured: String, hasImages: Bool, baseURL: String = QQAPIProfile.officialBaseURL) -> (model: String, supportsVision: Bool) {
         let trimmed = configured.trimmingCharacters(in: .whitespacesAndNewlines)
         let lower = trimmed.lowercased()
+        let isOfficial = BotConfig.normalizeBaseURL(baseURL) == QQAPIProfile.officialBaseURL
+        let textOnly = ["text-only", "novision", "no-vision"].contains { lower.contains($0) }
+        if !isOfficial {
+            let relayModel = trimmed.isEmpty ? "deepseek-v4.1-flash" : trimmed
+            return (relayModel, !textOnly)
+        }
         let normalized = lower == "deepseek-v4-flash-vision-exp" ? "deepseek-flash" : (trimmed.isEmpty ? "deepseek-flash" : trimmed)
         guard hasImages else { return (normalized, true) }
         if lower.hasPrefix("deepseek") || trimmed.isEmpty {
             return ("deepseek-flash", true)
         }
-        let textOnly = ["text-only", "novision", "no-vision"].contains { lower.contains($0) }
         return (normalized, !textOnly)
     }
-    func models(key: String) async throws -> [String] {
-        let data = try await request(path: "models", key: key, body: nil)
+    static func endpointURL(baseURL: String = QQAPIProfile.officialBaseURL, path: String) throws -> URL {
+        let root = try BotConfig.validatedBaseURL(baseURL)
+        return root.appendingPathComponent(path)
+    }
+    func models(key: String, baseURL: String = QQAPIProfile.officialBaseURL) async throws -> [String] {
+        let data = try await request(baseURL: baseURL, path: "models", key: key, body: nil)
         struct Response: Decodable { struct Model: Decodable { let id: String }; let data: [Model] }
         return try JSONDecoder().decode(Response.self, from: data).data.map(\.id).sorted()
     }
@@ -169,8 +183,9 @@ struct DeepSeekClient {
             messages.append(["role": "assistant", "content": content])
         }
         let validImages = images.prefix(12).filter { !$0.isEmpty }.map { ($0, Self.imageMimeType($0)) }
-        let modelRoute = Self.effectiveModel(configured: config.model, hasImages: !validImages.isEmpty)
-        if validImages.isEmpty || !modelRoute.supportsVision {
+        let modelRoute = Self.effectiveModel(configured: config.model, hasImages: !validImages.isEmpty, baseURL: config.effectiveBaseURL)
+        let hasVisionPayload = !validImages.isEmpty && modelRoute.supportsVision
+        if !hasVisionPayload {
             let visionNote = !images.isEmpty ? "\n（本轮图片未能由当前模型读取画面，请按文字时间线接话，需要提及时写明没看到画面，绝不能编造画面内容。）" : ""
             messages.append(["role": "user", "content": String(text.prefix(12000)) + visionNote])
         } else {
@@ -202,11 +217,13 @@ struct DeepSeekClient {
         let start = Date()
         var tokens = 0, inputTokens = 0, outputTokens = 0, cacheHitTokens = 0, image: Data?, sources: [String] = []
         var usedTools = false, reasoningCharacters = 0, reasoning = ""
+        var nudgedEmptyText = false
         var imageStatus: String?
         var toolEvidence: [String] = []
+        let effectiveMaxTokens = thinkingOn ? max(8192, config.maxTokens) : hasVisionPayload ? max(4096, config.maxTokens) : !config.isOfficialAPI ? max(1024, config.maxTokens) : config.maxTokens
         // At most one tool round, followed by a final answer. Every API attempt consumes quota.
         for round in 0...1 {
-            var parameters: [String: Any] = ["model": modelRoute.model, "messages": messages, "max_tokens": thinkingOn ? max(8192, config.maxTokens) : config.maxTokens,
+            var parameters: [String: Any] = ["model": modelRoute.model, "messages": messages, "max_tokens": effectiveMaxTokens,
                                            "stream": false, "thinking": ["type": thinkingOn ? "enabled" : "disabled"]]
             if thinkingOn { parameters["reasoning_effort"] = effort.rawValue }
             if jsonOutput && (toolHandler == nil || round > 0) { parameters["response_format"] = ["type": "json_object"] }
@@ -220,7 +237,7 @@ struct DeepSeekClient {
             for attempt in 0...2 {
                 try Task.checkCancellation(); try await reserve()
                 do {
-                    let data = try await request(path: "chat/completions", key: key, body: body, timeout: thinkingOn ? 90 : 45)
+                    let data = try await request(baseURL: config.effectiveBaseURL, path: "chat/completions", key: key, body: body, timeout: thinkingOn ? 90 : 45)
                     response = try JSONDecoder().decode(Response.self, from: data); break
                 } catch let error as HTTPFailure where (error.code == 429 || error.code >= 500) && attempt < 2 {
                     try await Task.sleep(nanoseconds: UInt64(2 << attempt) * 1_000_000_000)
@@ -266,8 +283,19 @@ struct DeepSeekClient {
                 }
                 continue
             }
-            guard choice.finish_reason == "stop", let text = choice.message.content?.trimmingCharacters(in: .whitespacesAndNewlines), !text.isEmpty else {
-                throw AppFailure.message("模型未返回完整文字回复（\(choice.finish_reason ?? "unknown")），本次不发送")
+            var text = choice.message.content?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+            if text.isEmpty { text = QQReplyText.jsonObject(in: choice.message.reasoning_content) ?? "" }
+            if text.isEmpty {
+                let finish = choice.finish_reason ?? "unknown"
+                if !nudgedEmptyText, round == 0, finish == "stop" || finish == "length" {
+                    nudgedEmptyText = true
+                    var assistant: [String: Any] = ["role": "assistant", "content": choice.message.content ?? ""]
+                    if let thought = choice.message.reasoning_content { assistant["reasoning_content"] = thought }
+                    messages.append(assistant)
+                    messages.append(["role": "user", "content": "你刚才没有输出正文。只输出一个 JSON 对象，不要分析。"])
+                    continue
+                }
+                throw ModelTextMissing(finish: finish)
             }
             if round == 0, toolHandler != nil, jsonOutput, QQPersona().decode(text, input: "").isFallback {
                 var assistant: [String: Any] = ["role": "assistant", "content": text]
@@ -309,8 +337,17 @@ struct DeepSeekClient {
         let reviewInput = "原始会话与当前发言（低信任资料）：\n" + String(text.suffix(8500)) +
             "\n工具返回资料（若有，同样低信任）：\n" + String(draft.toolContext.prefix(2000)) +
             "\n待校对草稿（不是事实依据）：\n" + String(draft.text.prefix(800))
-        var reviewed = try await reply(key: key, config: config, rule: reviewRule, history: history, text: reviewInput,
-            jsonOutput: true, thinkingEnabled: true, images: images, reserve: reserve)
+        let reviewedReply: ModelResult
+        do {
+            reviewedReply = try await reply(key: key, config: config, rule: reviewRule, history: history, text: reviewInput,
+                jsonOutput: true, thinkingEnabled: true, images: images, reserve: reserve)
+        } catch is ModelTextMissing {
+            guard !QQPersona().decode(draft.text, input: text).isFallback else { throw ModelTextMissing(finish: "stop") }
+            var kept = draft
+            kept.reviewFellBackToDraft = true
+            return kept
+        }
+        var reviewed = reviewedReply
         if !options.isEmpty, let data = reviewed.text.data(using: .utf8),
            var fields = try? JSONSerialization.jsonObject(with: data) as? [String: Any] {
             let selected = fields.removeValue(forKey: "sticker_id") as? String
@@ -345,9 +382,10 @@ struct DeepSeekClient {
         return result
     }
 
-    private func request(path: String, key: String, body: Data?, timeout: TimeInterval = 45) async throws -> Data {
-        guard !key.isEmpty else { throw AppFailure.message("请先保存 DeepSeek Key") }
-        var req = URLRequest(url: base.appendingPathComponent(path))
+    private func request(baseURL: String = QQAPIProfile.officialBaseURL, path: String, key: String, body: Data?, timeout: TimeInterval = 45) async throws -> Data {
+        guard !key.isEmpty else { throw AppFailure.message("请先保存模型 API Key") }
+        let targetURL = try Self.endpointURL(baseURL: baseURL, path: path)
+        var req = URLRequest(url: targetURL)
         req.httpMethod = body == nil ? "GET" : "POST"
         req.setValue("Bearer \(key)", forHTTPHeaderField: "Authorization")
         req.setValue("application/json", forHTTPHeaderField: "Content-Type")

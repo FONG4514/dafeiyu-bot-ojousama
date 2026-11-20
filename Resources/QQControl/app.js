@@ -107,7 +107,7 @@ const actionForms = {saveConnection:'connection',connect:'connection',save:'repl
 let customPersonaBase='';
 let stickerSignature='', stickerRenderSequence=0, importingStickers=false;
 let stickerOffset=0, stickerLoading=false;
-const credentialFields = {connection:['token','key'],image:['imageGenZhipuKey','imageGenCloudflareToken'],visual:['googleVisionKey']};
+const credentialFields = {connection:['token','key'],reply:['relayKey','backupRelayKey'],image:['imageGenZhipuKey','imageGenCloudflareToken'],visual:['googleVisionKey']};
 function renderDraftControls() {
   const replyDirty=dirtyForms.has('reply'), page=document.body.dataset.page;
   $('draftBanner').hidden=['wechat','guide'].includes(page)||dirtyForms.size===0;
@@ -152,7 +152,7 @@ function fingerprint(value) {
 }
 function formSnapshot(group) {
   const c=state.config;
-  const values={connection:[c.endpoint,c.expectedSelfID],reply:[c.ai,state.persona,c.senderPersonas??[],c.senderRules??[],c.targets,c.onlineEnabled,c.visionEnabled,c.memoryEnabled,state.memoryOptions,c.groupParticipationEnabled,c.groupParticipationEvery],artwork:[state.artwork,c.targets.map(t=>[t.number,t.group,t.name,t.enabled])],image:state.imageGeneration,visual:state.visualTools};
+  const values={connection:[c.endpoint,c.expectedSelfID],reply:[c.ai,state.persona,c.senderPersonas??[],c.senderRules??[],c.apiProfiles??[],c.targets,c.onlineEnabled,c.visionEnabled,c.memoryEnabled,state.memoryOptions,c.groupParticipationEnabled,c.groupParticipationEvery],artwork:[state.artwork,c.targets.map(t=>[t.number,t.group,t.name,t.enabled])],image:state.imageGeneration,visual:state.visualTools};
   return fingerprint([c.expectedSelfID,values[group]]);
 }
 function shouldSync(group) {
@@ -161,9 +161,41 @@ function shouldSync(group) {
   if(syncedForms.get(group)===snapshot) return false;
   syncedForms.set(group,snapshot); return true;
 }
+function detectAPIProvider(baseURL) {
+  const url=(baseURL||'https://api.deepseek.com').replace(/\/+$/,'');
+  if(url==='https://api.deepseek.com') return 'deepseek';
+  if(url==='https://sub.ciallo.cafe/v1') return 'ciallo';
+  return 'custom';
+}
+function renderAPIProviderFields() {
+  if(!$('apiProvider')) return;
+  const provider=$('apiProvider').value;
+  $('relayConfigFields').hidden=provider==='deepseek';
+}
+if($('apiProvider')) {
+  $('apiProvider').addEventListener('change',()=>{
+    const provider=$('apiProvider').value;
+    if(provider==='deepseek') {
+      $('apiBaseURL').value='https://api.deepseek.com';
+      if(!$('model').value.trim()||$('model').value.trim()==='deepseek-v4.1-flash') $('model').value='deepseek-flash';
+    } else if(provider==='ciallo') {
+      $('apiBaseURL').value='https://sub.ciallo.cafe/v1';
+      if(!$('model').value.trim()||$('model').value.trim()==='deepseek-flash') $('model').value='deepseek-v4.1-flash';
+    }
+    renderAPIProviderFields();
+  });
+}
+if($('fallbackProvider')) {
+  $('fallbackProvider').addEventListener('change',()=>{
+    const provider=$('fallbackProvider').value;
+    if(provider==='') { $('fallbackBaseURL').value=''; $('fallbackModel').value=''; }
+    else if(provider==='deepseek') { $('fallbackBaseURL').value='https://api.deepseek.com'; $('fallbackModel').value='deepseek-flash'; }
+    else if(provider==='ciallo') { $('fallbackBaseURL').value='https://sub.ciallo.cafe/v1'; $('fallbackModel').value='deepseek-v4.1-flash'; }
+  });
+}
 function syncForms() {
   for(const [group,fields] of Object.entries(credentialFields)) {
-    if(fields.some(id=>$(id).value) && !dirtyForms.has(group)) dirtyForms.set(group,{base:formSnapshot(group),revision:state.configurationRevision});
+    if(fields.some(id=>$(id)?.value) && !dirtyForms.has(group)) dirtyForms.set(group,{base:formSnapshot(group),revision:state.configurationRevision});
   }
   if(shouldSync('connection')) { $('endpoint').value=state.config.endpoint; $('account').value=state.config.expectedSelfID; }
   if(shouldSync('visual')) { $('visionProvider').value=state.visualTools?.provider??'deepseek'; $('googleWebEnabled').checked=state.visualTools?.googleWebEnabled??false; }
@@ -174,6 +206,14 @@ function syncForms() {
   }
   if(shouldSync('reply')) {
     const ai=state.config.ai, persona=state.persona, memory=state.memoryOptions;
+    const baseURL=ai.baseURL||'https://api.deepseek.com';
+    if($('apiBaseURL')) $('apiBaseURL').value=baseURL;
+    if($('apiProvider')) $('apiProvider').value=detectAPIProvider(baseURL);
+    if($('fallbackEnabled')) $('fallbackEnabled').checked=ai.fallbackEnabled??true;
+    if($('fallbackBaseURL')) $('fallbackBaseURL').value=ai.fallbackBaseURL??'';
+    if($('fallbackModel')) $('fallbackModel').value=ai.fallbackModel??'';
+    if($('fallbackProvider')) $('fallbackProvider').value=ai.fallbackBaseURL ? detectAPIProvider(ai.fallbackBaseURL) : '';
+    renderAPIProviderFields();
     for(const [id,value] of Object.entries({model:ai.model,prompt:ai.prompt,daily:ai.dailyLimit,cooldown:ai.cooldownSeconds,sendDaily:ai.sendLimits?.daily??100,chatDaily:ai.sendLimits?.perChatDaily??30,globalInterval:ai.sendLimits?.globalIntervalSeconds??3,workStart:ai.workStart,workEnd:ai.workEnd,groupParticipationEvery:state.config.groupParticipationEvery??10,personaStyle:persona.style??'teasing',maxCharacters:persona.maxCharacters,banter:persona.banter,stickerIntervalSeconds:persona.stickerIntervalSeconds,stickerEveryReplies:persona.stickerEveryReplies??3,memoryMessages:memory.messageThreshold,memoryCharacters:memory.characterThreshold,memoryMinutes:memory.intervalMinutes,memoryBudget:memory.retrievalCharacters,memoryLimit:memory.storeLimitMB??2048,memoryCompress:memory.compressEvery??12,memorySuper:memory.superDailyLearns??200,thinkingEffort:ai.thinkingEffort??'high',priceHit:ai.inputHitPrice??'',priceMiss:ai.inputMissPrice??'',priceOutput:ai.outputPrice??'',dailySpend:ai.dailySpendLimit??'',weeklySpend:ai.weeklySpendLimit??''})) $(id).value=value;
     $('debugLogging').checked=ai.debugLogging??false; $('reasoningOutput').checked=ai.reasoningOutput??false;
     for(const id of ['onlineEnabled','visionEnabled','memoryEnabled','groupParticipationEnabled']) $(id).checked=state.config[id]??false;
@@ -186,6 +226,7 @@ function syncForms() {
     $('senderPersonas').replaceChildren(...(state.config.senderPersonas??[]).map(senderPersonaRow));
     $('senderRules').replaceChildren(...(state.config.senderRules??[]).map(senderRuleRow));
     $('groupIgnoredSenders').replaceChildren(...state.config.targets.filter(t=>t.group).map(groupIgnoredRow));
+    if($('apiProfiles')) $('apiProfiles').replaceChildren(...(state.config.apiProfiles??[]).map(apiProfileRow));
     targetDraft.clear(); targetSignature='';
   }
   renderArtwork(shouldSync('artwork'));
@@ -249,6 +290,42 @@ function senderRuleDrafts() {
     if(daily) item.dailyLimit=Number(daily);
     if(cooldown) item.cooldownSeconds=Number(cooldown);
     return item;
+  });
+}
+function apiProfileRow(item={}) {
+  const row=document.createElement('div');row.className='api-profile';row.dataset.id=item.id??crypto.randomUUID();
+  const preset=document.createElement('select');preset.className='api-preset';
+  for(const [val,label] of [['deepseek','DeepSeek 官方'],['ciallo','Ciallo 中转站'],['custom','自定义中转站']]){const opt=document.createElement('option');opt.value=val;opt.textContent=label;preset.append(opt);}
+  preset.value=detectAPIProvider(item.baseURL);
+  const name=document.createElement('input');name.className='api-name';name.maxLength=60;name.placeholder='配置名称（例如：Ciallo 备用）';name.value=item.name??(preset.value==='ciallo'?'Ciallo 中转站':'DeepSeek 官方');
+  const baseURL=document.createElement('input');baseURL.className='api-base';baseURL.placeholder='https://sub.ciallo.cafe/v1';baseURL.value=item.baseURL??(preset.value==='ciallo'?'https://sub.ciallo.cafe/v1':'https://api.deepseek.com');
+  const model=document.createElement('input');model.className='api-model';model.placeholder='deepseek-v4.1-flash';model.value=item.model??(preset.value==='ciallo'?'deepseek-v4.1-flash':'deepseek-flash');
+  const key=document.createElement('input');key.type='password';key.className='api-key';key.autocomplete='off';key.placeholder='该 API 的密钥（留空保留）';
+  const remove=document.createElement('button');remove.type='button';remove.textContent='删除';
+  remove.addEventListener('click',()=>{const list=$('apiProfiles');row.remove();list.dispatchEvent(new Event('input',{bubbles:true}));});
+  preset.addEventListener('change',()=>{
+    if(preset.value==='deepseek'){baseURL.value='https://api.deepseek.com';model.value='deepseek-flash';if(!name.value||name.value==='Ciallo 中转站')name.value='DeepSeek 官方';}
+    else if(preset.value==='ciallo'){baseURL.value='https://sub.ciallo.cafe/v1';model.value='deepseek-v4.1-flash';if(!name.value||name.value==='DeepSeek 官方')name.value='Ciallo 中转站';}
+  });
+  row.append(preset,name,baseURL,model,key,remove);
+  return row;
+}
+function apiProfileDrafts() {
+  if(!$('apiProfiles')) return {profiles:[],keys:{}};
+  const profiles=[], keys={};
+  for(const row of $('apiProfiles').children) {
+    const baseURL=row.querySelector('.api-base').value.trim()||'https://api.deepseek.com';
+    const key=row.querySelector('.api-key').value.trim();
+    profiles.push({id:row.dataset.id,name:row.querySelector('.api-name').value.trim()||baseURL,baseURL,model:row.querySelector('.api-model').value.trim()||'deepseek-flash',supportsVision:true});
+    if(key) keys[baseURL]=key;
+  }
+  return {profiles,keys};
+}
+if($('addAPIProfile')) {
+  $('addAPIProfile').addEventListener('click',()=>{
+    const row=apiProfileRow({baseURL:'https://sub.ciallo.cafe/v1',name:'Ciallo 中转站',model:'deepseek-v4.1-flash'});
+    $('apiProfiles').append(row);
+    row.dispatchEvent(new Event('input',{bubbles:true}));row.querySelector('input').focus();
   });
 }
 function renderSenderPersonaControls() {
@@ -447,7 +524,7 @@ function render() {
   text('scopeState',`已启用 ${activeTargets} 个会话`); $('scopeState').dataset.ready=activeTargets>0;
   text('runState',state.running ? '正在自动回复' : '已暂停'); $('runState').dataset.ready=state.running; text('error',actionError || state.error);
   text('deadline', state.runDeadline ? `将在 ${new Date(state.runDeadline*1000).toLocaleString('zh-CN')} 自动暂停` : '');
-  text('queue', `队列 ${state.queued} / ${state.queueCapacity}`);
+  text('queue', `队列 ${state.queued} / ${state.queueCapacity} · 发送队列 ${state.sendQueued ?? 0}`);
   for (const id of ['calls','confirmed','uncertain','rejected']) text(id,state[id]);
   const hints=state.configurationHints??[];
   $('stepConnection').dataset.complete=state.connected;
@@ -458,11 +535,12 @@ function render() {
   renderRuntimeRecords();
   text('credentials',state.temporaryCredentials ? '临时凭证已载入' : '');
   $('connect').disabled = state.connected || state.busy || pending;
+  if($('syncNapCat')) $('syncNapCat').disabled = state.connected || state.busy || pending;
   $('disconnect').disabled = !state.connected && !state.busy;
   $('start').disabled = !state.connected || state.running || state.busy || pending;
   $('once').disabled = $('start').disabled;
   for(const id of ['endpoint','account','token','key','saveConnection']) $(id).disabled = state.connected || state.busy || pending;
-  for(const id of ['model','prompt','daily','cooldown','sendDaily','chatDaily','globalInterval','duration','personaStyle','maxCharacters','banter','stickersEnabled','stickerIntervalSeconds','stickerEveryReplies','onlineEnabled','visionEnabled','memoryEnabled','memoryMessages','memoryCharacters','memoryMinutes','memoryBudget','memoryLimit','memoryCompress','memorySuper','exportMemory','reclassifyMemory','groupParticipationEnabled','groupParticipationEvery','workHoursEnabled','workStart','workEnd','save','thinkingEffort','debugLogging','reasoningOutput','priceHit','priceMiss','priceOutput','dailySpend','weeklySpend']) $(id).disabled = state.running || state.busy || pending;
+  for(const id of ['model','apiProvider','apiBaseURL','relayKey','fallbackEnabled','fallbackProvider','fallbackBaseURL','fallbackModel','backupRelayKey','prompt','daily','cooldown','sendDaily','chatDaily','globalInterval','duration','personaStyle','maxCharacters','banter','stickersEnabled','stickerIntervalSeconds','stickerEveryReplies','onlineEnabled','visionEnabled','memoryEnabled','memoryMessages','memoryCharacters','memoryMinutes','memoryBudget','memoryLimit','memoryCompress','memorySuper','exportMemory','reclassifyMemory','groupParticipationEnabled','groupParticipationEvery','workHoursEnabled','workStart','workEnd','save','thinkingEffort','debugLogging','reasoningOutput','priceHit','priceMiss','priceOutput','dailySpend','weeklySpend']) if($(id)) $(id).disabled = state.running || state.busy || pending;
   const usage=state.usage;
   if(usage){const money=usage.pricesReady?`今日金额 ${Number(usage.daySpend).toFixed(6)}，本周 ${Number(usage.weekSpend).toFixed(6)}`:'未填齐三项单价，不估算金额，金额上限不生效';text('spendStatus',`今日调用 ${usage.calls} 次，token ${usage.tokens}（输入 ${usage.inputTokens??0}，输出 ${usage.outputTokens??0}，缓存命中 ${usage.cacheHitTokens??0}）。${money}`);}
   text('imageGenCredentials', `本次已载入：智谱 ${state.imageCredentials?.zhipu ? '有凭证' : '未载入'}；Cloudflare ${state.imageCredentials?.cloudflare ? '有凭证' : '未载入'}`);
@@ -491,7 +569,7 @@ function render() {
   if(catalogSignature!==stickerSignature) {stickerSignature=catalogSignature;text('stickerCount',state.stickers.length);if($('stickerGallery').open)renderStickers(state.stickers);}
   for(const id of ['stickerTrigger','stickerEmotions','stickerKeywords','stickerRepeatHours','stickerFiles','importEmotion','importContext','importAuthor','importLicense','importSource','importPublic','importStickers']) $(id).disabled=state.running||state.busy||pending||importingStickers;
   syncForms();
-  const signature = JSON.stringify(state.config.targets.map(t => [t.id,t.name,t.number,t.group,t.enabled,t.personaStyle,t.memoryMode]));
+  const signature = JSON.stringify([state.config.targets.map(t => [t.id,t.name,t.number,t.group,t.enabled,t.personaStyle,t.memoryMode,t.apiProfileID]), state.config.apiProfiles??[]]);
   if(signature !== targetSignature) {
     $('targets').replaceChildren(); targetSignature = signature;
     for(const target of state.config.targets) {
@@ -508,8 +586,11 @@ function render() {
       const mode=document.createElement('select');mode.setAttribute('aria-label',`记忆模式：${targetName}`);mode.dataset.target=key;mode.dataset.memoryMode='1';
       for(const item of [['balanced','均衡'],['super','超级记忆'],['fast','极速']]){const option=document.createElement('option');option.value=item[0];option.textContent=item[1];mode.append(option);}
       mode.value=target.memoryMode??'balanced';mode.addEventListener('change',()=>act({action:'setMemoryMode',target:key,memoryMode:mode.value}));
+      const apiSelect=document.createElement('select');apiSelect.setAttribute('aria-label',`本会话 API：${targetName}`);apiSelect.dataset.target=key;apiSelect.dataset.apiProfile='1';
+      for(const item of [{id:'default',name:'默认 API'},...(state.config.apiProfiles??[])]){const option=document.createElement('option');option.value=item.id;option.textContent=item.name;apiSelect.append(option);}
+      apiSelect.value=target.apiProfileID??'default';apiSelect.addEventListener('change',()=>act({action:'setTargetAPI',target:key,apiProfileID:apiSelect.value}));
       const quota=document.createElement('span');quota.className='sub';quota.textContent=target.memoryMode==='super' ? `今日剩余 ${state.superLearnRemaining?.[key] ?? ''} 次` : '';
-      row.append(label,style,mode,quota,button('接管',{action:'takeOver',target:key},`接管：${targetName}`),button('清除记忆并暂停',{action:'clearMemory',target:key},`清除记忆并暂停：${targetName}`),button('移除',{action:'remove',target:key},`移除：${targetName}`));
+      row.append(label,style,mode,apiSelect,quota,button('接管',{action:'takeOver',target:key},`接管：${targetName}`),button('清除记忆并暂停',{action:'clearMemory',target:key},`清除记忆并暂停：${targetName}`),button('移除',{action:'remove',target:key},`移除：${targetName}`));
       $('targets').append(row);
     }
   }
@@ -538,7 +619,7 @@ function renderScopeActions() {
   for(const select of $('targets').querySelectorAll('select')) {
     select.disabled=busy||hasDraft;
     const target=state.config.targets.find(t=>`${t.group?'group':'private'}:${t.number}`===select.dataset.target);
-    select.value=select.dataset.memoryMode ? (target?.memoryMode??'balanced') : (target?.personaStyle??'default');
+    select.value=select.dataset.memoryMode ? (target?.memoryMode??'balanced') : select.dataset.apiProfile ? (target?.apiProfileID??'default') : (target?.personaStyle??'default');
   }
   for(const row of $('targets').children) {const last=[...row.children].reverse().find(node=>node.tagName==='BUTTON'); if(last) last.disabled=busy||hasDraft;}
   renderContacts();
@@ -579,6 +660,10 @@ $('imageGenSave').addEventListener('click',async()=>{
 });
 $('search').addEventListener('input',renderContacts);
 $('saveConnection').addEventListener('click',()=>act({action:'saveConnection',endpoint:$('endpoint').value.trim(),expectedSelfID:$('account').value.trim()}));
+if($('syncNapCat')) $('syncNapCat').addEventListener('click',async()=>{
+  const action={action:'syncNapCat',expectedSelfID:$('account').value.trim()||undefined,key:$('key').value,baseURL:$('apiBaseURL')?.value.trim()};
+  if(await act(action)){$('token').value='';$('key').value='';}
+});
 $('connect').addEventListener('click',async()=>{if($('endpoint').value.trim()!==state.config.endpoint || $('account').value.trim()!==state.config.expectedSelfID){showActionError('请先保存地址与账号，再连接。输入已保留。');return;}const action={action:'connect',endpoint:$('endpoint').value.trim(),expectedSelfID:$('account').value.trim(),token:$('token').value,key:$('key').value};if(await act(action)){$('token').value='';$('key').value='';}});
 for(const id of ['pause','disconnect','clear']) $(id).addEventListener('click',()=>act({action:id}));
 for(const action of ['start','save','once']) $(action).addEventListener('click',async()=>{
@@ -590,7 +675,15 @@ for(const action of ['start','save','once']) $(action).addEventListener('click',
   const numeric=['daily','cooldown','sendDaily','chatDaily','globalInterval','maxCharacters','stickerIntervalSeconds','stickerEveryReplies','stickerRepeatHours','memoryMessages','memoryCharacters','memoryMinutes','memoryBudget','memoryLimit','memoryCompress','memorySuper','groupParticipationEvery','workStart','workEnd'];
   if(!validateNumericInputs(numeric)) return;
   const ai=structuredClone(state.config.ai);
+  const selectedProvider=$('apiProvider')?.value??'deepseek';
+  const rawBaseURL=selectedProvider==='deepseek' ? 'https://api.deepseek.com' : (selectedProvider==='ciallo' && (!$('apiBaseURL').value.trim()||$('apiBaseURL').value.trim()==='https://api.deepseek.com') ? 'https://sub.ciallo.cafe/v1' : $('apiBaseURL').value.trim());
+  ai.baseURL=rawBaseURL==='https://api.deepseek.com' ? undefined : rawBaseURL;
   ai.model=$('model').value.trim();ai.prompt=$('prompt').value;
+  ai.fallbackEnabled=$('fallbackEnabled') ? $('fallbackEnabled').checked : true;
+  const fbURL=$('fallbackBaseURL')?.value.trim()||'';
+  const fbModel=$('fallbackModel')?.value.trim()||'';
+  ai.fallbackBaseURL=fbURL||undefined;
+  ai.fallbackModel=fbModel||undefined;
   ai.workHoursEnabled=$('workHoursEnabled').checked;
   if(ai.workHoursEnabled) { ai.workStart=Number($('workStart').value);ai.workEnd=Number($('workEnd').value); }
   ai.dailyLimit=Number($('daily').value);ai.cooldownSeconds=Number($('cooldown').value);
@@ -599,9 +692,14 @@ for(const action of ['start','save','once']) $(action).addEventListener('click',
   ai.inputHitPrice=money('priceHit');ai.inputMissPrice=money('priceMiss');ai.outputPrice=money('priceOutput');ai.dailySpendLimit=money('dailySpend');ai.weeklySpendLimit=money('weeklySpend');
   ai.sendLimits={...(ai.sendLimits ?? {globalIntervalSeconds:3}),globalIntervalSeconds:Number($('globalInterval').value),daily:Number($('sendDaily').value),perChatDaily:Number($('chatDaily').value)};
   const persona={style:$('personaStyle').value,customName:$('customPersonaName').value,customPrompt:$('customPersonaPrompt').value,maxCharacters:Number($('maxCharacters').value),banter:Number($('banter').value),stickersEnabled:$('stickersEnabled').checked,stickerIntervalSeconds:Number($('stickerIntervalSeconds').value),stickerEveryReplies:Number($('stickerEveryReplies').value),stickerTrigger:$('stickerTrigger').value,stickerEmotions:[...$('stickerEmotions').selectedOptions].map(o=>o.value),stickerKeywords:$('stickerKeywords').value.split('\n').map(s=>s.trim()).filter(Boolean),stickerRepeatHours:Number($('stickerRepeatHours').value)};
-  const success=await act({action:'save',persona,senderPersonas:senderPersonaDrafts(),senderRules:senderRuleDrafts(),ignoredSenders:groupIgnoredDrafts(),groupParticipationEnabled:$('groupParticipationEnabled').checked,groupParticipationEvery:Number($('groupParticipationEvery').value),onlineEnabled:$('onlineEnabled').checked,visionEnabled:$('visionEnabled').checked,memoryEnabled:$('memoryEnabled').checked,memoryOptions:{messageThreshold:Number($('memoryMessages').value),characterThreshold:Number($('memoryCharacters').value),intervalMinutes:Number($('memoryMinutes').value),retrievalCharacters:Number($('memoryBudget').value),storeLimitMB:Number($('memoryLimit').value),compressEvery:Number($('memoryCompress').value),superDailyLearns:Number($('memorySuper').value)},enabled:[...$('targets').querySelectorAll('input:checked')].map(c=>c.dataset.target),ai});
+  const apiDraft=apiProfileDrafts();
+  const relayKey=$('relayKey')?.value.trim()||'';
+  const backupRelayKey=$('backupRelayKey')?.value.trim()||'';
+  const success=await act({action:'save',persona,senderPersonas:senderPersonaDrafts(),senderRules:senderRuleDrafts(),ignoredSenders:groupIgnoredDrafts(),apiProfiles:apiDraft.profiles,apiProfileKeys:apiDraft.keys,relayKey,backupRelayKey,groupParticipationEnabled:$('groupParticipationEnabled').checked,groupParticipationEvery:Number($('groupParticipationEvery').value),onlineEnabled:$('onlineEnabled').checked,visionEnabled:$('visionEnabled').checked,memoryEnabled:$('memoryEnabled').checked,memoryOptions:{messageThreshold:Number($('memoryMessages').value),characterThreshold:Number($('memoryCharacters').value),intervalMinutes:Number($('memoryMinutes').value),retrievalCharacters:Number($('memoryBudget').value),storeLimitMB:Number($('memoryLimit').value),compressEvery:Number($('memoryCompress').value),superDailyLearns:Number($('memorySuper').value)},enabled:[...$('targets').querySelectorAll('input:checked')].map(c=>c.dataset.target),ai});
   if(success) {
     targetDraft.clear();
+    if($('relayKey')) $('relayKey').value='';
+    if($('backupRelayKey')) $('backupRelayKey').value='';
   }
 });
 document.addEventListener('input',event=>{
