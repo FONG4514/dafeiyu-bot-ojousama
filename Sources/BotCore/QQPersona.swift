@@ -139,16 +139,22 @@ public struct QQPersona: Codable, Equatable, Sendable {
             return QQReply(text: limited(rebuff), emotion: sharp ? .annoyed : .neutral, intensity: sharp ? 3 : 0)
         }
         let fallback = QQReply(text: Self.defaultReply, emotion: .neutral, intensity: 0, isFallback: true)
-        var normalized = raw.trimmingCharacters(in: .whitespacesAndNewlines)
-        if normalized.hasPrefix("```") {
-            normalized = normalized.dropFirst(normalized.hasPrefix("```json") ? 7 : 3).trimmingCharacters(in: .whitespacesAndNewlines)
-            if normalized.hasSuffix("```") { normalized = String(normalized.dropLast(3)).trimmingCharacters(in: .whitespacesAndNewlines) }
-        }
+        let normalized = stripped(raw)
         guard normalized.utf8.count <= 16384, !normalized.isEmpty else { return fallback }
         if let reply = acceptedReply(in: normalized) { return reply }
         guard !normalized.hasPrefix("{"), normalized.range(of: Self.forbiddenReply, options: .regularExpression) == nil else { return fallback }
         return QQReply(text: limited(normalized), emotion: .neutral, intensity: 1)
     }
+    private func stripped(_ raw: String) -> String {
+        var normalized = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+        if normalized.hasPrefix("```") {
+            normalized = normalized.dropFirst(normalized.hasPrefix("```json") ? 7 : 3).trimmingCharacters(in: .whitespacesAndNewlines)
+            if normalized.hasSuffix("```") { normalized = String(normalized.dropLast(3)).trimmingCharacters(in: .whitespacesAndNewlines) }
+        }
+        return normalized
+    }
+    /// True when the model already returned a JSON object with a usable text field.
+    public func hasStructuredText(_ raw: String) -> Bool { acceptedReply(in: stripped(raw)) != nil }
     /// Extra JSON fields are ignored. A missing or unknown emotion becomes neutral, and intensity is clamped to 0...3.
     private func acceptedReply(in raw: String) -> QQReply? {
         let slice: String

@@ -297,7 +297,7 @@ struct DeepSeekClient {
                 }
                 throw ModelTextMissing(finish: finish)
             }
-            if round == 0, toolHandler != nil, jsonOutput, QQPersona().decode(text, input: "").isFallback {
+            if round == 0, toolHandler != nil, jsonOutput, !QQPersona().hasStructuredText(text) {
                 var assistant: [String: Any] = ["role": "assistant", "content": text]
                 if let reasoning = choice.message.reasoning_content { assistant["reasoning_content"] = reasoning }
                 messages.append(assistant)
