@@ -970,7 +970,7 @@ struct QQSendJob: Identifiable, Sendable {
                 let persona = config.persona(for: incoming)
                 var rule = ChatRule(id: target.id, name: target.name)
                 rule.prompt = persona.prompt(notes: config.ai.prompt) + config.boundRoster(for: incoming)
-                if QQLocalClock.asks(incoming.text) { rule.prompt += "\n" + QQLocalClock.prompt() }
+                rule.prompt += "\n" + QQLocalClock.prompt()
                 let result: ModelResult
                 do {
                     result = try await runWithAPIFallback(for: target, epoch: epoch, scope: poke.key) { apiConfig, apiKey in
@@ -1200,7 +1200,7 @@ struct QQSendJob: Identifiable, Sendable {
                     rule.prompt += "\n本轮提到的 \(known) 是你认识的熟人：可以用常用称呼自然提起，表现出认识，不要说不认识或反问是谁；但不能替他说话，也不透露他的私聊、记忆或别人说过他什么。"
                 }
                 if !message.group { modelInput = String(modelInput.suffix(12000)) }
-                if QQLocalClock.asks(message.text) { rule.prompt += "\n" + QQLocalClock.prompt() }
+                rule.prompt += "\n" + QQLocalClock.prompt()
                 if config.effectiveMemoryEnabled {
                     let recentLines = (message.group ? groupRecentMessages[message.key] ?? [] : memoryBooks[memoryScope]?.recent ?? []).suffix(4).map { "[\($0.subject)] \($0.text)" }.joined(separator: "\n")
                     if memoryMode == .superMemory {

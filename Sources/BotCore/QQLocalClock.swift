@@ -34,6 +34,6 @@ public enum QQLocalClock {
         let sign = seconds >= 0 ? "+" : "-"
         let magnitude = abs(seconds)
         let offset = String(format: "%@%02d:%02d", sign, magnitude / 3600, (magnitude % 3600) / 60)
-        return "本机时钟（程序透传，不是记忆，不要写入记忆，不要联网，不要猜测，不要提及城市、路径或账号）：本地时间 \(formatter.string(from: now))，时区偏移 \(offset)。问现在几点或今天几号时只根据这段回答。"
+        return "本机时钟（每次回复前由程序透传，不是记忆，不要写入记忆，不要联网，不要猜测，不要提及城市、路径或账号）：本地时间 \(formatter.string(from: now))，时区偏移 \(offset)。对方问时间或日期时只根据这段回答；其他时候不必主动报时。"
     }
 }
