@@ -1325,8 +1325,10 @@ struct QQSendJob: Identifiable, Sendable {
                             result.text = String(decoding: try JSONSerialization.data(withJSONObject: ["text": QQPersona.defaultReply, "emotion": "neutral", "intensity": 0]), as: UTF8.self)
                         }
                         result.shouldSend = true
-                    } else {
+                    } else if initialCheck.isFallback || initialCheck.text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || isSilentPlaceholder {
                         result.text = String(decoding: try JSONSerialization.data(withJSONObject: ["text": QQPersona.defaultReply, "emotion": "neutral", "intensity": 0]), as: UTF8.self)
+                        result.shouldSend = true
+                    } else {
                         result.shouldSend = true
                     }
                 }

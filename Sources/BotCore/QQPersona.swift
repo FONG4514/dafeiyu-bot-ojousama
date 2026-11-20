@@ -164,8 +164,9 @@ public struct QQPersona: Codable, Equatable, Sendable {
             slice = raw
         }
         guard let data = slice.data(using: .utf8),
-              let fields = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
-              let text = fields["text"] as? String else { return nil }
+              let fields = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else { return nil }
+        let text = ["text", "reply", "answer", "description", "content", "caption"].lazy.compactMap { fields[$0] as? String }.first { !$0.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }
+        guard let text else { return nil }
         let clean = text.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !clean.isEmpty, clean.range(of: Self.forbiddenReply, options: .regularExpression) == nil else { return nil }
         let emotion = Self.emotion(fields["emotion"]) ?? .neutral
