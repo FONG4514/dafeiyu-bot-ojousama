@@ -1453,30 +1453,41 @@ struct QQSendJob: Identifiable, Sendable {
     /// Dedicated outgoing send queue worker. A job remains at the head of `sendQueue`
     /// while OneBot is called so the queued text and trigger snapshot are never overwritten.
     private func drainSends(_ epoch: UInt64) async {
-        defer { if fence.permits(epoch) { sendWorker = nil } }
+        defer {
+            if fence.permits(epoch) {
+                sendWorker = nil
+                if !sendQueue.isEmpty { startSendQueue() }
+            }
+        }
         while fence.permits(epoch), let job = sendQueue.first {
             var ticket: UUID?
+            var discard = false
             let submissionID = UUID()
             let message = job.trigger
             let target = job.target
             defer {
                 activeGroupSubmissions.removeValue(forKey: submissionID)
-                sendQueue.removeAll { $0.id == job.id }
+                if discard { sendQueue.removeAll { $0.id == job.id } }
             }
             do {
                 let outgoingText = job.text.trimmingCharacters(in: .whitespacesAndNewlines)
-                guard !outgoingText.isEmpty else { continue }
+                guard !outgoingText.isEmpty else {
+                    discard = true
+                    record(target.id, .skipped, "发送任务没有正文，未发送")
+                    continue
+                }
                 while sends.allowance(chat: target.id, limits: config.ai.effectiveSendLimits, chatCooldown: config.ai.cooldownSeconds) == .cooldown {
                     try await Task.sleep(nanoseconds: 200_000_000); try check(epoch, scope: target.key, target: target)
                 }
                 try check(epoch, scope: target.key, target: target)
                 guard sends.allowance(chat: target.id, limits: config.ai.effectiveSendLimits, chatCooldown: config.ai.cooldownSeconds) == .allowed else {
+                    discard = true
                     record(target.id, .skipped, "发送限额已用完"); continue
                 }
                 switch job.kind {
                 case let .artwork(prepared, due):
-                    if let due, Date().timeIntervalSince(due) > 120 { record(target.id, .skipped, "插画定时任务已过期，不补发"); continue }
-                    if due != nil && (prepared.id == nil || prepared.image == nil) { artworkStatus = "定时插画无可附图的合格作品，本次跳过"; continue }
+                    if let due, Date().timeIntervalSince(due) > 120 { discard = true; record(target.id, .skipped, "插画定时任务已过期，不补发"); continue }
+                    if due != nil && (prepared.id == nil || prepared.image == nil) { discard = true; artworkStatus = "定时插画无可附图的合格作品，本次跳过"; continue }
                     ticket = try sends.reserve(chat: target.id, limits: config.ai.effectiveSendLimits, chatCooldown: config.ai.cooldownSeconds)
                     if due == nil, ["featured", "search", "hot", "artist", "id"].contains(prepared.request.mode) {
                         artworkLedger.continuation[config.expectedSelfID + ":" + target.key] = prepared.request
@@ -1504,7 +1515,11 @@ struct QQSendJob: Identifiable, Sendable {
                     record(target.id, .confirmed, artworkStatus)
                     if singleReply { pause() }
                 case .poke:
-                    guard senderAllowance(for: message.sender) == .allowed else { continue }
+                    guard senderAllowance(for: message.sender) == .allowed else {
+                        discard = true
+                        record(target.id, .skipped, "按人接话限制未满足，戳一戳未发送")
+                        continue
+                    }
                     ticket = try sends.reserve(chat: target.id, limits: config.ai.effectiveSendLimits, chatCooldown: config.ai.cooldownSeconds)
                     try persist()
                     let (action, params) = QQPolicy.sendAction(target: target, text: job.text)
@@ -1589,13 +1604,23 @@ struct QQSendJob: Identifiable, Sendable {
                         }
                     }
                 }
+                discard = true
+            } catch is CancellationError {
+                discard = true
             } catch {
                 heldOwnerEvents = heldOwnerEvents.filter { !$0.key.hasPrefix(target.key + ":") }
                 if let ticket {
+                    discard = true
                     sends.finish(ticket, confirmed: false); artworkLedger.finish(ticket, confirmed: false)
                     record(target.id, .uncertain, "发送结果未知，不重发；已暂停 QQ")
                     if fence.permits(epoch) { pause() }
-                } else if fence.permits(epoch) { record(target.id, .failed, error.localizedDescription) }
+                } else if !fence.permits(epoch) || error.localizedDescription.contains("已暂停") || error.localizedDescription.contains("目标已变更") {
+                    discard = true
+                    record(target.id, .failed, error.localizedDescription)
+                } else {
+                    record(target.id, .failed, "发送尚未提交，保留队列稍后重试：" + error.localizedDescription)
+                    try? await Task.sleep(nanoseconds: 1_000_000_000)
+                }
                 if let http = error as? HTTPFailure, [401, 402].contains(http.code), fence.permits(epoch) { pause() }
             }
         }
