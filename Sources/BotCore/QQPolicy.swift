@@ -421,6 +421,10 @@ public struct QQPoke: Equatable, Sendable {
 public struct QQIncomingImage: Equatable, Sendable {
     public let file: String
     public let url: String?
+    public init(file: String, url: String?) {
+        self.file = file
+        self.url = url
+    }
 }
 
 public struct QQQuotedContext: Equatable, Sendable {
@@ -435,6 +439,11 @@ public enum QQNapCatConfig {
         public let endpoint: String
         public let token: String
         public let selfID: String
+        public init(endpoint: String, token: String, selfID: String) {
+            self.endpoint = endpoint
+            self.token = token
+            self.selfID = selfID
+        }
     }
     public static func randomToken() -> String {
         let alphabet = Array("abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789-_")
