@@ -25,6 +25,15 @@ struct QQPolicyTests {
         var config = QQConfig(); config.expectedSelfID = "12345"
         let old = try JSONDecoder().decode(QQConfig.self, from: JSONEncoder().encode(config))
         #expect(!old.effectiveGroupParticipationEnabled); #expect(old.effectiveGroupParticipationEvery == 10)
+        #expect(old.effectiveGroupParticipationWillingness == 5)
+        var object = try JSONSerialization.jsonObject(with: JSONEncoder().encode(config)) as! [String: Any]
+        object.removeValue(forKey: "groupParticipationWillingness")
+        let missing = try JSONDecoder().decode(QQConfig.self, from: JSONSerialization.data(withJSONObject: object))
+        #expect(missing.effectiveGroupParticipationWillingness == 5)
+        config.groupParticipationWillingness = 0
+        #expect(throws: (any Error).self) { try config.validate() }
+        config.groupParticipationWillingness = 1
+        try config.validate()
         for invalid in [0, -1, 1001] {
             config.groupParticipationEvery = invalid
             #expect(throws: (any Error).self) { try config.validate() }

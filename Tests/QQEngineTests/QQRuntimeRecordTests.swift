@@ -23,6 +23,11 @@ import BotCore
         #expect(record.detail.contains("不重发"))
         #expect(QQRuntimeRecord(entry, target: nil, secrets: []).target == "历史会话（当前名单外）")
         #expect(QQRuntimeRecord(LogEntry(state: .confirmed, detail: "OneBot 已接受发送；不代表对方已读"), target: nil, secrets: []).title == "已获发送确认")
+        let called = LogEntry(state: .generating, detail: "已调用记忆查询", kind: "memory")
+        let finished = LogEntry(state: .generating, detail: "记忆查询完成，取得 2 条", kind: "memory")
+        #expect(called.shown(debug: false, reasoning: false) && finished.shown(debug: false, reasoning: false))
+        #expect(QQRuntimeRecord(called, target: nil, secrets: []).title == "记忆查询")
+        #expect(QQRuntimeRecord(finished, target: nil, secrets: []).detail == "记忆查询完成，取得 2 条")
     }
 
     @Test func restoredLogsAreBoundedNewestFirstAndDoNotChangeCounters() throws {

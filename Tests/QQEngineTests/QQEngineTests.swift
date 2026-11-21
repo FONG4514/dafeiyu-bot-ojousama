@@ -62,7 +62,15 @@ private final class DelayedModelProtocol: URLProtocol, @unchecked Sendable {
         for item in active {
             let response = HTTPURLResponse(url: item.request.url!, statusCode: 200, httpVersion: nil, headerFields: nil)!
             item.client?.urlProtocol(item, didReceive: response, cacheStoragePolicy: .notAllowed)
-            if item.capturedBody.contains("[QQ_MEMORY_V2]") {
+            if item.capturedBody.contains("这是一个新会话") || item.capturedBody.contains("这是另一个新会话") {
+                let payload: String
+                if item.capturedBody.contains("\"role\":\"tool\"") {
+                    payload = #"{"choices":[{"message":{"content":"{\"text\":\"记住了天文馆。\",\"emotion\":\"neutral\",\"intensity\":0}"},"finish_reason":"stop"}],"usage":{"total_tokens":1}}"#
+                } else {
+                    payload = #"{"choices":[{"message":{"content":"","tool_calls":[{"id":"fresh-memory","type":"function","function":{"name":"recall_memory","arguments":"{\"chat\":\"99999\",\"query\":\"天文馆\"}"}}]},"finish_reason":"tool_calls"}],"usage":{"total_tokens":1}}"#
+                }
+                item.client?.urlProtocol(item, didLoad: Data(payload.utf8))
+            } else if item.capturedBody.contains("[QQ_MEMORY_V2]") {
                 let request = try! JSONSerialization.jsonObject(with: Data(item.capturedBody.utf8)) as! [String: Any]
                 let messages = request["messages"] as! [[String: Any]]
                 let input = try! JSONSerialization.jsonObject(with: Data((messages.last!["content"] as! String).utf8)) as! [String: Any]
@@ -250,6 +258,47 @@ private final class DelayedModelProtocol: URLProtocol, @unchecked Sendable {
         #expect(engine.running); #expect(engine.queuedCount == 0)
         #expect(engine.groupMessageCounts["group:99999"] == (mode == "direct" ? 1 : 0))
         if mode == "ownerToOther" { #expect(!FileManager.default.fileExists(atPath: directory.appendingPathComponent("payload").path)) }
+    }
+
+    @Test func lowJoinWillingnessHonorsADecisionNotToSpeak() async throws {
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        try Data("groupParticipation".utf8).write(to: directory.appendingPathComponent("message-shape"))
+        let server = Process(), output = Pipe()
+        server.executableURL = URL(fileURLWithPath: ProcessInfo.processInfo.environment["DAFEIYU_PYTHON"] ?? "/usr/bin/python3")
+        server.arguments = [URL(fileURLWithPath: #filePath).deletingLastPathComponent().appendingPathComponent("onebot_fixture.py").path, directory.path]
+        server.standardOutput = output; try server.run()
+        defer { if server.isRunning { server.terminate(); server.waitUntilExit() } }
+        let port = try #require(Int(String(decoding: output.fileHandleForReading.availableData, as: UTF8.self).trimmingCharacters(in: .whitespacesAndNewlines)))
+        DelayedModelProtocol.reset()
+        let cfg = URLSessionConfiguration.ephemeral; cfg.protocolClasses = [DelayedModelProtocol.self]
+        let session = URLSession(configuration: cfg)
+        defer { session.invalidateAndCancel(); DelayedModelProtocol.reset() }
+        let engine = QQEngine(allowAuthenticationUI: false, storageDirectory: directory, modelClient: DeepSeekClient(session: session))
+        defer { engine.disconnect() }
+        engine.config.endpoint = "ws://127.0.0.1:\(port)"; engine.config.expectedSelfID = "12345"
+        engine.config.memoryEnabled = false; engine.config.effectiveGroupParticipationEnabled = true
+        engine.config.effectiveGroupParticipationEvery = 2; engine.config.effectiveGroupParticipationWillingness = 1
+        engine.config.effectivePersona.stickersEnabled = true
+        #expect(engine.useTemporaryCredentials(token: "synthetic-test-token", key: "synthetic-key"))
+        await engine.connect(); try #require(engine.connected, "\(engine.error ?? engine.status)")
+        engine.add(try #require(engine.contacts.first { $0.number == "99999" }))
+        engine.config.targets[0].enabled = true; engine.start()
+        var rows: [[String: Any]] = []
+        for id in 1...2 {
+            rows.append(["post_type": "message", "self_id": 12345, "user_id": 54321, "sender": ["user_id": 54321], "message_type": "group", "sub_type": "normal", "group_id": 99999, "message_id": id, "message": [["type": "text", "data": ["text": "合成成员在互相聊天"]]]])
+        }
+        try writePrivateData(JSONSerialization.data(withJSONObject: rows), to: directory.appendingPathComponent("event-batch"))
+        let deadline = Date().addingTimeInterval(4)
+        while Date() < deadline {
+            DelayedModelProtocol.completePending(participate: false)
+            if engine.logs.contains(where: { $0.detail.contains("没必要接话") }) { break }
+            try await Task.sleep(nanoseconds: 20_000_000)
+        }
+        #expect(engine.sends.confirmed == 0)
+        #expect(engine.sends.attempts == 0)
+        #expect(engine.logs.contains { $0.detail.contains("接话意愿 1") })
     }
 
     @Test func groupTimelineIncludesBotAcrossMembersAndSkipsMediaOnlyParticipation() async throws {
@@ -927,5 +976,52 @@ private final class DelayedModelProtocol: URLProtocol, @unchecked Sendable {
         let imageTrigger = QQIncoming(id: "2", sender: "54321", target: "99999", group: true, text: "看图", time: 2, replyTo: nil, images: [QQIncomingImage(file: "a.jpg", url: "https://multimedia.nt.qq.com.cn/a.jpg")])
         let unverifiedVisionJob = QQSendJob(account: "12345", target: target, direction: .outgoing, trigger: imageTrigger, text: "还没看完", replyText: "还没看完", image: nil, epoch: 0, quotaPosition: 0, visionCompleted: false, kind: .poke)
         await #expect(throws: Error.self) { try await engine.enqueueSend(unverifiedVisionJob, waitForDelivery: false) }
+    }
+
+    @Test func superMemoryLooksUpBeforeTheModelEvenWhenTheModelSkipsTheTool() async throws {
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        try Data("groupParticipation".utf8).write(to: directory.appendingPathComponent("message-shape"))
+        let subject = QQMemoryBook.subject(account: "12345", target: "group:99999", sender: "54321")
+        let now = Date()
+        let store = try QQMemoryStore(directory: directory, limitMB: 256)
+        try store.importScope("12345:group:99999", items: [QQMemoryItem(subject: subject, kind: "fact", text: "合成成员约定去天文馆", keywords: ["天文馆"], importance: 2, sourceIDs: ["1"], updatedAt: now, expiresAt: now.addingTimeInterval(86400))])
+        try store.snapshot()
+        let server = Process(), output = Pipe()
+        server.executableURL = URL(fileURLWithPath: ProcessInfo.processInfo.environment["DAFEIYU_PYTHON"] ?? "/usr/bin/python3")
+        server.arguments = [URL(fileURLWithPath: #filePath).deletingLastPathComponent().appendingPathComponent("onebot_fixture.py").path, directory.path]
+        server.standardOutput = output; try server.run()
+        defer { if server.isRunning { server.terminate(); server.waitUntilExit() } }
+        let port = try #require(Int(String(decoding: output.fileHandleForReading.availableData, as: UTF8.self).trimmingCharacters(in: .whitespacesAndNewlines)))
+        DelayedModelProtocol.reset()
+        let cfg = URLSessionConfiguration.ephemeral; cfg.protocolClasses = [DelayedModelProtocol.self]
+        let session = URLSession(configuration: cfg)
+        defer { session.invalidateAndCancel(); DelayedModelProtocol.reset() }
+        let engine = QQEngine(allowAuthenticationUI: false, storageDirectory: directory, modelClient: DeepSeekClient(session: session))
+        defer { engine.disconnect() }
+        engine.config.endpoint = "ws://127.0.0.1:\(port)"; engine.config.expectedSelfID = "12345"
+        engine.config.effectiveMemoryEnabled = true
+        engine.config.effectiveGroupParticipationEnabled = true
+        engine.config.effectiveGroupParticipationEvery = 1
+        engine.config.effectivePersona.stickersEnabled = false
+        #expect(engine.useTemporaryCredentials(token: "synthetic-test-token", key: "synthetic-key"))
+        await engine.connect(); try #require(engine.connected, "\(engine.error ?? engine.status)")
+        engine.add(try #require(engine.contacts.first { $0.number == "99999" && $0.group }))
+        engine.config.targets[0].enabled = true
+        engine.config.targets[0].memoryMode = .superMemory
+        engine.start(); try #require(engine.running)
+        let row: [String: Any] = ["post_type": "message", "self_id": 12345, "user_id": 54321, "sender": ["user_id": 54321], "message_type": "group", "sub_type": "normal", "group_id": 99999, "message_id": 1, "message": [["type": "text", "data": ["text": String(repeating: "甲", count: 60) + "天文馆"]]]]
+        try writePrivateData(JSONSerialization.data(withJSONObject: [row]), to: directory.appendingPathComponent("event-batch"))
+        let deadline = Date().addingTimeInterval(6)
+        while Date() < deadline {
+            DelayedModelProtocol.completePending()
+            if DelayedModelProtocol.counts.bodies.contains(where: { $0.contains("本轮已查询本会话记忆") && $0.contains("合成成员约定去天文馆") }) { break }
+            try await Task.sleep(nanoseconds: 20_000_000)
+        }
+        #expect(engine.logs.contains { $0.kind == "memory" && $0.detail == "已调用记忆查询" })
+        #expect(engine.logs.contains { $0.kind == "memory" && $0.detail.contains("记忆查询完成（新会话）") })
+        #expect(DelayedModelProtocol.counts.bodies.contains { $0.contains("这是一个新会话") && $0.contains("recall_memory") })
+        #expect(DelayedModelProtocol.counts.bodies.contains { $0.contains("本轮已查询本会话记忆") && $0.contains("合成成员约定去天文馆") })
     }
 }

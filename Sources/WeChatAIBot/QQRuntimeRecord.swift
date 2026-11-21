@@ -15,6 +15,7 @@ struct QQRuntimeRecord: Encodable, Identifiable {
         id = entry.id; timestamp = entry.date.timeIntervalSince1970; state = entry.state
         if entry.kind == "debug" { title = "调试" }
         else if entry.kind == "reasoning" { title = "思考过程" }
+        else if entry.kind == "memory" { title = "记忆查询" }
         else { switch entry.state {
         case .queued: title = "等待处理"
         case .generating: title = "正在生成"

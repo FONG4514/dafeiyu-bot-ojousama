@@ -82,8 +82,14 @@ public struct QQConfig: Codable, Equatable, Sendable {
     public var effectiveMemoryOptions: QQMemoryOptions { get { memoryOptions ?? QQMemoryOptions() } set { memoryOptions = newValue } }
     public var groupParticipationEnabled: Bool?
     public var groupParticipationEvery: Int?
+    /// 1 is the least willing to join. 5 keeps the current behavior and is the default.
+    public var groupParticipationWillingness: Int?
     public var effectiveGroupParticipationEnabled: Bool { get { groupParticipationEnabled ?? false } set { groupParticipationEnabled = newValue } }
     public var effectiveGroupParticipationEvery: Int { get { groupParticipationEvery ?? 10 } set { groupParticipationEvery = newValue } }
+    public var effectiveGroupParticipationWillingness: Int {
+        get { min(5, max(1, groupParticipationWillingness ?? 5)) }
+        set { groupParticipationWillingness = min(5, max(1, newValue)) }
+    }
     public var effectiveVisionEnabled: Bool { get { visionEnabled ?? false } set { visionEnabled = newValue } }
     public var effectiveMemoryEnabled: Bool { get { memoryEnabled ?? false } set { memoryEnabled = newValue } }
     public var onlineEnabled: Bool?
@@ -249,9 +255,60 @@ public struct QQConfig: Codable, Equatable, Sendable {
         try effectiveMemoryOptions.validate()
         try effectiveImageGeneration.validate()
         guard (1...1000).contains(effectiveGroupParticipationEvery) else { throw CoreError.invalid("群主动接话间隔应为 1 至 1000 条消息") }
+        if let groupParticipationWillingness, !(1...5).contains(groupParticipationWillingness) { throw CoreError.invalid("接话意愿应为 1 至 5") }
     }
     public static func validID(_ s: String) -> Bool { Int64(s).map { $0 > 0 && String($0) == s } ?? false }
 }
+extension QQConfig {
+    private enum StoredKey: String, CodingKey {
+        case endpoint, expectedSelfID, targets, ai, artwork, persona, visualTools, visionEnabled, memoryEnabled, memoryOptions
+        case groupParticipationEnabled, groupParticipationEvery, groupParticipationWillingness, onlineEnabled, imageGeneration
+        case senderPersonas, senderRules, apiProfiles
+    }
+    public init(from decoder: Decoder) throws {
+        let values = try decoder.container(keyedBy: StoredKey.self)
+        endpoint = try values.decodeIfPresent(String.self, forKey: .endpoint) ?? "ws://127.0.0.1:3001"
+        expectedSelfID = try values.decodeIfPresent(String.self, forKey: .expectedSelfID) ?? ""
+        targets = try values.decodeIfPresent([QQTarget].self, forKey: .targets) ?? []
+        ai = try values.decodeIfPresent(BotConfig.self, forKey: .ai) ?? BotConfig()
+        artwork = try values.decodeIfPresent(QQArtworkConfig.self, forKey: .artwork)
+        persona = try values.decodeIfPresent(QQPersona.self, forKey: .persona)
+        visualTools = try values.decodeIfPresent(QQVisualConfig.self, forKey: .visualTools)
+        visionEnabled = try values.decodeIfPresent(Bool.self, forKey: .visionEnabled)
+        memoryEnabled = try values.decodeIfPresent(Bool.self, forKey: .memoryEnabled)
+        memoryOptions = try values.decodeIfPresent(QQMemoryOptions.self, forKey: .memoryOptions)
+        groupParticipationEnabled = try values.decodeIfPresent(Bool.self, forKey: .groupParticipationEnabled)
+        groupParticipationEvery = try values.decodeIfPresent(Int.self, forKey: .groupParticipationEvery)
+        groupParticipationWillingness = try values.decodeIfPresent(Int.self, forKey: .groupParticipationWillingness)
+        onlineEnabled = try values.decodeIfPresent(Bool.self, forKey: .onlineEnabled)
+        imageGeneration = try values.decodeIfPresent(QQImageGenerationConfig.self, forKey: .imageGeneration)
+        senderPersonas = try values.decodeIfPresent([QQSenderPersona].self, forKey: .senderPersonas)
+        senderRules = try values.decodeIfPresent([QQSenderRule].self, forKey: .senderRules)
+        apiProfiles = try values.decodeIfPresent([QQAPIProfile].self, forKey: .apiProfiles)
+    }
+    public func encode(to encoder: Encoder) throws {
+        var values = encoder.container(keyedBy: StoredKey.self)
+        try values.encode(endpoint, forKey: .endpoint)
+        try values.encode(expectedSelfID, forKey: .expectedSelfID)
+        try values.encode(targets, forKey: .targets)
+        try values.encode(ai, forKey: .ai)
+        try values.encodeIfPresent(artwork, forKey: .artwork)
+        try values.encodeIfPresent(persona, forKey: .persona)
+        try values.encodeIfPresent(visualTools, forKey: .visualTools)
+        try values.encodeIfPresent(visionEnabled, forKey: .visionEnabled)
+        try values.encodeIfPresent(memoryEnabled, forKey: .memoryEnabled)
+        try values.encodeIfPresent(memoryOptions, forKey: .memoryOptions)
+        try values.encodeIfPresent(groupParticipationEnabled, forKey: .groupParticipationEnabled)
+        try values.encodeIfPresent(groupParticipationEvery, forKey: .groupParticipationEvery)
+        try values.encodeIfPresent(groupParticipationWillingness, forKey: .groupParticipationWillingness)
+        try values.encodeIfPresent(onlineEnabled, forKey: .onlineEnabled)
+        try values.encodeIfPresent(imageGeneration, forKey: .imageGeneration)
+        try values.encodeIfPresent(senderPersonas, forKey: .senderPersonas)
+        try values.encodeIfPresent(senderRules, forKey: .senderRules)
+        try values.encodeIfPresent(apiProfiles, forKey: .apiProfiles)
+    }
+}
+
 public struct QQIncoming: Equatable, Sendable {
     public let id: String
     public let sender: String

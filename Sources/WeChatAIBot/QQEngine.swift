@@ -111,6 +111,7 @@ struct QQSendJob: Identifiable, Sendable {
     private enum Work {
         case reply(QQIncoming, QQTarget, Bool)
         case artwork(QQArtworkRequest, QQTarget, Date?)
+        case hit(QQIncoming, QQTarget, Int)
     }
     private var queue: [Work] = [] {
         didSet { queuedCount = queue.count }
@@ -120,6 +121,7 @@ struct QQSendJob: Identifiable, Sendable {
     }
     private var sendWorker: Task<Void, Never>?
     private var pokeQueue: [(QQPoke, QQTarget)] = []
+    private var hitClocks: [String: QQHitClock] = [:]
     private var pokeWorker: Task<Void, Never>?
     private var loginWorker: Task<Void, Never>?
     private var relayKeys: [String: String] = [:]
@@ -493,7 +495,7 @@ struct QQSendJob: Identifiable, Sendable {
             return false
         }
     }
-    func saveReplySettings(ai: BotConfig, persona: QQPersona, onlineEnabled: Bool? = nil, visionEnabled: Bool? = nil, memoryEnabled: Bool? = nil, groupParticipationEnabled: Bool? = nil, groupParticipationEvery: Int? = nil, memoryOptions: QQMemoryOptions? = nil, enabledTargets: Set<String>? = nil, senderPersonas: [QQSenderPersona]? = nil, senderRules: [QQSenderRule]? = nil, ignoredSenders: [String: [String]]? = nil, apiProfiles: [QQAPIProfile]? = nil, relayKey: String = "", backupRelayKey: String = "", persistRelayKey: Bool = false) {
+    func saveReplySettings(ai: BotConfig, persona: QQPersona, onlineEnabled: Bool? = nil, visionEnabled: Bool? = nil, memoryEnabled: Bool? = nil, groupParticipationEnabled: Bool? = nil, groupParticipationEvery: Int? = nil, groupParticipationWillingness: Int? = nil, memoryOptions: QQMemoryOptions? = nil, enabledTargets: Set<String>? = nil, senderPersonas: [QQSenderPersona]? = nil, senderRules: [QQSenderRule]? = nil, ignoredSenders: [String: [String]]? = nil, apiProfiles: [QQAPIProfile]? = nil, relayKey: String = "", backupRelayKey: String = "", persistRelayKey: Bool = false) {
         guard !running, !busy, !runtimeBusy else { error = "请先暂停并等待当前操作完成"; return }
         let previous = config, previousBooks = memoryBooks
         do {
@@ -514,6 +516,7 @@ struct QQSendJob: Identifiable, Sendable {
             if let memoryOptions { updated.memoryOptions = memoryOptions }
             if let groupParticipationEnabled { updated.groupParticipationEnabled = groupParticipationEnabled }
             if let groupParticipationEvery { updated.groupParticipationEvery = groupParticipationEvery }
+            if let groupParticipationWillingness { updated.groupParticipationWillingness = groupParticipationWillingness }
             if let enabledTargets {
                 guard enabledTargets.isSubset(of: Set(updated.targets.map(\.key))) else { throw AppFailure.message("范围包含未知会话") }
                 for index in updated.targets.indices { updated.targets[index].enabled = enabledTargets.contains(updated.targets[index].key) }
@@ -820,6 +823,25 @@ struct QQSendJob: Identifiable, Sendable {
         if QQPersonaCommand.parse(message.text) != nil {
             record(target.id, .skipped, "性格命令已停用，人设只能在面板修改"); return
         }
+        let hitNow = Date()
+        if hitClocks[target.key]?.isFainted(at: hitNow) == true {
+            if !message.group || message.mentionsSelf || QQHitClock.matches(message.text) {
+                admitWork(.hit(message, target, 5), target: target, label: "晕倒中，不接话")
+            }
+            return
+        }
+        if QQHitClock.matches(message.text) {
+            var clock = hitClocks[target.key] ?? QQHitClock()
+            let outcome = clock.hit(at: hitNow)
+            hitClocks[target.key] = clock
+            switch outcome {
+            case .faint:
+                admitWork(.hit(message, target, 5), target: target, label: "晕倒了")
+            case .dizzy(let count):
+                admitWork(.hit(message, target, count), target: target, label: "挨打已入队")
+            }
+            return
+        }
         // Explicit slash commands are independent invitations, before memory/model/count processing.
         if let command = QQArtworkRequest.parse(message.text),
            let segments = object["message"] as? [[String: Any]],
@@ -1038,6 +1060,9 @@ struct QQSendJob: Identifiable, Sendable {
             if case let .artwork(request, target, due) = item {
                 await deliverArtwork(request, target: target, due: due, epoch: epoch); continue
             }
+            if case let .hit(message, target, count) = item {
+                await deliverHit(message, target: target, count: count, epoch: epoch); continue
+            }
             guard case let .reply(message, target, proactive) = item else { continue }
             var preparedArtwork: QQArtworkPrepared?
             do {
@@ -1201,8 +1226,9 @@ struct QQSendJob: Identifiable, Sendable {
                 }
                 if !message.group { modelInput = String(modelInput.suffix(12000)) }
                 rule.prompt += "\n" + QQLocalClock.prompt()
+                let recentMemoryLines = config.effectiveMemoryEnabled ? (message.group ? groupRecentMessages[message.key] ?? [] : memoryBooks[memoryScope]?.recent ?? []).suffix(4).map { "[\($0.subject)] \($0.text)" }.joined(separator: "\n") : ""
                 if config.effectiveMemoryEnabled {
-                    let recentLines = (message.group ? groupRecentMessages[message.key] ?? [] : memoryBooks[memoryScope]?.recent ?? []).suffix(4).map { "[\($0.subject)] \($0.text)" }.joined(separator: "\n")
+                    let recentLines = recentMemoryLines
                     if memoryMode == .superMemory {
                         let cap = message.group ? 8200 : 12000
                         if modelInput.count > cap * 8 / 10 {
@@ -1216,7 +1242,7 @@ struct QQSendJob: Identifiable, Sendable {
                     }
                 }
                 if config.effectiveMemoryEnabled, memoryBooks[memoryScope] != nil {
-                    let recallRelevant = !proactive && (!message.group || groupContext?.hasUnansweredText == true)
+                    let recallRelevant = memoryMode == .superMemory || (!proactive && (!message.group || groupContext?.hasUnansweredText == true))
                     let recalled = recallRelevant ? memoryStore?.prompt(scope: memoryScope, query: message.text, subject: memorySubject, characters: min(300, config.effectiveMemoryOptions.retrievalCharacters), catalog: memoryMode != .fast) ?? "" : ""
                     memoryPromptCharacters += recalled.count
                     let memoryDirection = message.group ? "这里只有本轮群聊自己的记忆，群聊不可读取任何私聊记忆（私聊与群聊互不读取群侧隔离保持生效）。" : "这里包含当前私聊记忆及该用户在群聊中的本人相关记忆（群聊不可读取私聊；私聊与群聊互不读取其他人的记忆）。"
@@ -1230,18 +1256,40 @@ struct QQSendJob: Identifiable, Sendable {
                     rule.prompt += "\n你具备生图能力，但本轮未生成。不得编造画笔没带、不会画图等理由；若群成员想明确请求你画图，可简短建议真正 @ 你说明画面。"
                 }
                 var toolHandler: (@MainActor @Sendable (String, String) async throws -> ModelToolResult)?
-                let memoryTools = config.effectiveMemoryEnabled && !proactive && memoryMode != .fast
+                let memoryTools = config.effectiveMemoryEnabled && memoryMode != .fast && memoryMode != .superMemory && !proactive
+                let otherTools = !proactive && (config.effectiveOnlineEnabled || config.effectiveImageGeneration.enabled || (config.effectiveArtwork.enabled && config.effectiveArtwork.agentEnabled))
                 citedMemoryIDs = []
-                if !webRequested && preparedImage == nil && !proactive && (memoryTools || config.effectiveOnlineEnabled || config.effectiveImageGeneration.enabled || (config.effectiveArtwork.enabled && config.effectiveArtwork.agentEnabled)) {
+                if memoryMode == .superMemory && config.effectiveMemoryEnabled {
+                    let query = String((message.text + "\n" + recentMemoryLines).prefix(2000))
+                    let first = querySessionMemory(scope: memoryScope, query: query, categories: [], history: false, subject: memorySubject, target: target.id)
+                    guard memoryStore != nil else { throw AppFailure.message("记忆查询未完成，记忆库不可用") }
+                    var combined = first
+                    let remembered = QQMemoryIndex.terms(first.replacingOccurrences(of: message.text, with: ""))
+                    let missing = QQMemoryIndex.terms(message.text).subtracting(remembered)
+                    if !missing.isEmpty {
+                        let focused = String(missing.sorted().joined(separator: " ").prefix(2000))
+                        var second = await freshSessionRecall(message: message, target: target, query: focused, epoch: epoch)
+                        if second.isEmpty { second = querySessionMemory(scope: memoryScope, query: focused, categories: [], history: false, subject: memorySubject, target: target.id, note: "未记住的内容") }
+                        let known = Set(first.split(whereSeparator: \.isNewline).map(String.init))
+                        let extra = second.split(whereSeparator: \.isNewline).map(String.init).filter { !known.contains($0) }
+                        if !extra.isEmpty { combined = combined.isEmpty ? extra.joined(separator: "\n") : combined + "\n" + extra.joined(separator: "\n") }
+                    }
+                    modelInput = "本轮已查询本会话记忆（低信任）：\n" + (combined.isEmpty ? "本会话没有匹配的记忆" : combined) + "\n" + modelInput
+                }
+                if !webRequested && preparedImage == nil && (memoryTools || otherTools) {
                     toolHandler = { [weak self] name, arguments in
                         guard let self else { throw CancellationError() }
                         try self.check(epoch, scope: message.key, target: target)
                         let output: ModelToolResult
                         if name == "recall_memory" {
-                            guard memoryTools, let request = QQMemoryRecall.parse(arguments, expectedChat: message.target) else { return ModelToolResult(content: "未查询") }
-                            let found = self.memoryStore?.recall(scope: memoryScope, query: request.query, categories: request.categories, history: request.history, subject: memorySubject) ?? ("", [])
-                            self.citedMemoryIDs.append(contentsOf: found.1); self.memoryToolCalls += 1
-                            output = ModelToolResult(content: found.0.isEmpty ? "本会话没有匹配的记忆" : found.0)
+                            guard memoryTools else {
+                                self.record(target.id, .generating, "已调用记忆查询", kind: "memory")
+                                return ModelToolResult(content: "未查询")
+                            }
+                            let request = QQMemoryRecall.resolved(arguments: arguments, expectedChat: message.target, fallbackQuery: message.text + " " + recentMemoryLines)
+                            let text = self.querySessionMemory(scope: memoryScope, query: request.query, categories: request.categories, history: request.history, subject: memorySubject, target: target.id)
+                            guard !text.isEmpty || self.memoryStore != nil else { return ModelToolResult(content: "记忆查询未完成，记忆库不可用") }
+                            output = ModelToolResult(content: text.isEmpty ? "本会话没有匹配的记忆" : text)
                         } else if name == "find_artwork", self.config.effectiveArtwork.enabled, self.config.effectiveArtwork.agentEnabled {
                             guard let request = QQArtworkLibrary.toolRequest(arguments) else { return ModelToolResult(content: "插画参数无效，未请求来源。") }
                             let prepared: QQArtworkPrepared
@@ -1274,7 +1322,7 @@ struct QQSendJob: Identifiable, Sendable {
                     do {
                         result = try await runWithAPIFallback(for: target, epoch: epoch, scope: message.key) { apiConfig, apiKey in
                             try await modelClient.reviewedQQReply(key: apiKey, config: apiConfig, rule: rule,
-                                history: message.group ? [] : Array((history[contextKey] ?? []).suffix(2)), text: modelInput, images: incomingImages, toolHandler: toolHandler, onlineToolsEnabled: !proactive && config.effectiveOnlineEnabled, imageGenerationEnabled: !proactive && config.effectiveImageGeneration.enabled, artworkEnabled: !proactive && config.effectiveArtwork.enabled && config.effectiveArtwork.agentEnabled, memoryToolEnabled: memoryTools, stickerOptions: stickerOptions, proactive: proactive && preparedImage == nil, reserve: { [weak self] in
+                                history: message.group ? [] : Array((history[contextKey] ?? []).suffix(2)), text: modelInput, images: incomingImages, toolHandler: toolHandler, onlineToolsEnabled: !proactive && config.effectiveOnlineEnabled, imageGenerationEnabled: !proactive && config.effectiveImageGeneration.enabled, artworkEnabled: !proactive && config.effectiveArtwork.enabled && config.effectiveArtwork.agentEnabled, memoryToolEnabled: memoryTools, stickerOptions: stickerOptions, proactive: proactive && preparedImage == nil, participationWillingness: config.effectiveGroupParticipationWillingness, reserve: { [weak self] in
                                     guard let self else { throw CancellationError() }
                                     try await self.reserveModel(epoch, scope: message.key, target: target)
                                 })
@@ -1302,7 +1350,16 @@ struct QQSendJob: Identifiable, Sendable {
                 let initialCheck = persona.decode(result.text, input: !proactive ? message.text : "主动加入群话题")
                 let isSilentPlaceholder = initialCheck.text == "[保持安静]" || initialCheck.text == "保持安静"
                 if proactive && (!result.shouldSend || isSilentPlaceholder) {
-                    // A queued turn always leaves with a sentence. Silence becomes the default reply.
+                    let willingness = config.effectiveGroupParticipationWillingness
+                    if willingness <= 3 {
+                        record(target.id, .skipped, "接话意愿 \(willingness)，本轮觉得没必要接话")
+                        continue
+                    }
+                    if willingness == 4 && groupContext?.hasUnansweredText != true {
+                        record(target.id, .skipped, "接话意愿 4，当前没有未回复文字，不勉强接话")
+                        continue
+                    }
+                    // Willingness 5 always leaves with a sentence. Level 4 retries once when text remains, then still speaks.
                     if groupContext?.hasUnansweredText == true {
                         if initialCheck.isFallback || initialCheck.text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || isSilentPlaceholder {
                             do {
@@ -1767,6 +1824,48 @@ struct QQSendJob: Identifiable, Sendable {
         guard result.id == nil || result.image != nil else { throw AppFailure.message("作品图片未就绪，已阻止仅链接发送") }
         return result
     }
+    private func deliverHit(_ message: QQIncoming, target: QQTarget, count: Int, epoch: UInt64) async {
+        let text: String
+        if count >= 5 {
+            text = QQHitClock.faintReply
+        } else {
+            text = await spokenHit(message, target: target, count: count, epoch: epoch)
+        }
+        let job = QQSendJob(
+            account: config.expectedSelfID, target: target, direction: .outgoing, trigger: message,
+            text: text, replyText: text, image: nil, epoch: epoch, quotaPosition: sends.attempts, visionCompleted: true,
+            kind: .reply(proactive: false, isFallback: false, reviewFellBackToDraft: false, sticker: nil, preparedArtwork: nil, privateContext: nil, turnInput: message.text, citedMemoryIDs: [])
+        )
+        do {
+            try await enqueueSend(job)
+            record(target.id, .queued, count >= 5 ? "晕倒中，一分钟内不接话" : "挨打回应已入队")
+        } catch {
+            if fence.permits(epoch) { record(target.id, .failed, error.localizedDescription) }
+        }
+    }
+    /// The hit count is already decided. The model only writes one persona sentence.
+    private func spokenHit(_ message: QQIncoming, target: QQTarget, count: Int, epoch: UInt64) async -> String {
+        let persona = config.persona(for: message.key)
+        var rule = ChatRule(id: target.id, name: target.name)
+        rule.prompt = persona.prompt(notes: config.ai.prompt) + "\n" + QQHitClock.modelInstruction(count: count)
+        do {
+            try check(epoch, scope: message.key, target: target)
+            let result = try await runWithAPIFallback(for: target, epoch: epoch, scope: message.key) { apiConfig, apiKey in
+                try await modelClient.reply(key: apiKey, config: apiConfig, rule: rule, history: [], text: "对方使用 /hit 打了你一下。", jsonOutput: true, thinkingEnabled: true, reserve: { [weak self] in
+                    guard let self else { throw CancellationError() }
+                    try await self.reserveModel(epoch, scope: message.key, target: target)
+                })
+            }
+            try check(epoch, scope: message.key, target: target)
+            absorb(result, target: target)
+            let reply = persona.decode(result.text, input: "/hit")
+            if reply.isFallback || reply.text == QQHitClock.faintReply { return QQPersona.defaultReply }
+            return reply.text
+        } catch {
+            if fence.permits(epoch), !modelCallBlocked(error) { return QQPersona.defaultReply }
+            return ""
+        }
+    }
     private func deliverArtwork(_ request: QQArtworkRequest, target: QQTarget, due: Date?, epoch: UInt64) async {
         do {
             while sends.allowance(chat: target.id, limits: config.ai.effectiveSendLimits, chatCooldown: config.ai.cooldownSeconds) == .cooldown {
@@ -1941,6 +2040,53 @@ struct QQSendJob: Identifiable, Sendable {
             let money = cost.map { String(format: " 金额≈%.6f", $0) } ?? " 未填单价"
             debug(target?.id, "模型返回 思考=\(config.ai.effectiveThinking.rawValue) 输入\(result.inputTokens) 输出\(result.outputTokens) 缓存命中\(result.cacheHitTokens)\(money)")
         }
+    }
+    /// A short new chat calls the memory tool. One retry, then one more new chat. The long reply is not used.
+    private func freshSessionRecall(message: QQIncoming, target: QQTarget, query: String, epoch: UInt64) async -> String {
+        let prompts = [
+            "这是一个新会话，没有旧对话。查询以前的事必须调用 recall_memory，chat 必须是 \(message.target)。不要编造。",
+            "这是另一个新会话。只调用 recall_memory，chat 必须是 \(message.target)。"
+        ]
+        for (promptIndex, note) in [(0, "新会话"), (0, "新会话重试"), (1, "再开新会话")] {
+            do {
+                try check(epoch, scope: message.key, target: target)
+                var rule = ChatRule(id: target.id, name: target.name)
+                rule.prompt = config.persona(for: message.key).prompt(notes: config.ai.prompt) + "\n" + prompts[promptIndex]
+                let result = try await runWithAPIFallback(for: target, epoch: epoch, scope: message.key) { apiConfig, apiKey in
+                    try await modelClient.reply(key: apiKey, config: apiConfig, rule: rule, history: [], text: query, jsonOutput: false, thinkingEnabled: false, toolHandler: { [weak self] name, arguments in
+                        guard let self, name == "recall_memory" else { return ModelToolResult(content: "未执行") }
+                        let request = QQMemoryRecall.resolved(arguments: arguments, expectedChat: message.target, fallbackQuery: query)
+                        let text = self.querySessionMemory(scope: self.config.memoryScope(for: message), query: request.query.isEmpty ? query : request.query, categories: request.categories, history: request.history, subject: QQMemoryBook.subject(account: self.config.expectedSelfID, target: message.key, sender: message.sender), target: target.id, note: "新会话")
+                        return ModelToolResult(content: text.isEmpty ? "本会话没有匹配的记忆" : text)
+                    }, onlineToolsEnabled: false, imageGenerationEnabled: false, artworkEnabled: false, memoryToolEnabled: true, reserve: { [weak self] in
+                        guard let self else { throw CancellationError() }
+                        try await self.reserveModel(epoch, scope: message.key, target: target)
+                    })
+                }
+                let found = result.toolContext.replacingOccurrences(of: "未执行", with: "").trimmingCharacters(in: .whitespacesAndNewlines)
+                if result.usedTools, !found.isEmpty { return found }
+                record(target.id, .queued, "\(note)没有调出记忆工具", kind: "memory")
+            } catch {
+                if modelCallBlocked(error) { return "" }
+                if fence.permits(epoch) { record(target.id, .failed, "\(note)失败", kind: "memory") }
+            }
+        }
+        return ""
+    }
+    /// Super memory runs this before the model speaks. A tool call can run it again with the model's own query.
+    private func querySessionMemory(scope: String, query: String, categories: [String], history: Bool, subject: String, target: UUID, note: String = "") -> String {
+        let mark = note.isEmpty ? "" : "（\(note)）"
+        record(target, .generating, "已调用记忆查询" + mark, kind: "memory")
+        guard let store = memoryStore else {
+            record(target, .failed, "记忆查询未完成，记忆库不可用", kind: "memory")
+            return ""
+        }
+        let found = store.recall(scope: scope, query: query, categories: categories, history: history, subject: subject)
+        citedMemoryIDs.append(contentsOf: found.1)
+        memoryToolCalls += 1
+        let count = found.0.split(whereSeparator: \.isNewline).filter { !$0.isEmpty }.count
+        record(target, .generating, "记忆查询完成" + mark + "，取得 \(count) 条", kind: "memory")
+        return found.0
     }
     private func debug(_ target: UUID?, _ detail: String) {
         guard config.ai.effectiveDebug else { return }

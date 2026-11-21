@@ -256,8 +256,8 @@ struct DeepSeekClient {
             cacheHitTokens += min(max(0, cached), max(0, prompt))
             reasoningCharacters += choice.message.reasoning_content?.count ?? 0
             if let thought = choice.message.reasoning_content, !thought.isEmpty { reasoning += (reasoning.isEmpty ? "" : "\n") + thought }
-            if choice.finish_reason == "tool_calls", round == 0, let toolHandler,
-               let calls = choice.message.tool_calls, (1...2).contains(calls.count), Set(calls.map(\.id)).count == calls.count,
+            let calls = choice.message.tool_calls ?? []
+            if round == 0, let toolHandler, !calls.isEmpty, (1...2).contains(calls.count), Set(calls.map(\.id)).count == calls.count,
                calls.allSatisfy({ !$0.id.isEmpty && $0.id.count <= 200 && $0.type == "function" }) {
                 usedTools = true
                 let encoded = try JSONSerialization.jsonObject(with: JSONEncoder().encode(calls))
@@ -313,9 +313,9 @@ struct DeepSeekClient {
     func reviewedQQReply(key: String, config: BotConfig, rule: ChatRule, history: [ChatTurn], text: String,
                          images: [Data] = [], toolHandler: (@MainActor @Sendable (String, String) async throws -> ModelToolResult)? = nil,
                onlineToolsEnabled: Bool = true, imageGenerationEnabled: Bool = false, artworkEnabled: Bool = false, memoryToolEnabled: Bool = false,
-                         stickerOptions: [QQStickerLibrary.Item] = [], proactive: Bool = false, reserve: @escaping @Sendable () async throws -> Void) async throws -> ModelResult {
+                         stickerOptions: [QQStickerLibrary.Item] = [], proactive: Bool = false, participationWillingness: Int = 5, reserve: @escaping @Sendable () async throws -> Void) async throws -> ModelResult {
         var generationRule = rule
-        if proactive { generationRule.prompt += "\n" + QQGroupContext.participationPrompt }
+        if proactive { generationRule.prompt += "\n" + QQGroupContext.participationPrompt(willingness: participationWillingness) }
         var draft = try await reply(key: key, config: config, rule: generationRule, history: history, text: text,
             jsonOutput: true, thinkingEnabled: true, images: images, toolHandler: toolHandler, onlineToolsEnabled: onlineToolsEnabled, imageGenerationEnabled: imageGenerationEnabled, artworkEnabled: artworkEnabled, memoryToolEnabled: memoryToolEnabled, reserve: reserve)
         if proactive {
@@ -327,7 +327,10 @@ struct DeepSeekClient {
         reviewRule.prompt += "\n" + QQPersona.reviewAttitudeRule
         reviewRule.prompt += "\n最终检查：当 BOT 上一句把玩笑当真，而本轮成员明确指出开玩笑/没听懂时，必须承认刚才理解错或没接住。禁止事后声称早就懂、故意考人、只是配合演戏；也禁止加不过/但是去教育对方或坚持虚构风险。这一轮吃瘪的可爱只能来自承认自己的失误，不能否认失误。"
         if proactive {
-            reviewRule.prompt += "\n本轮是群聊主动参与，覆盖上面针对私聊 PEER 的默认称呼解释：不能默认最后发言者是 PEER、也不能默认其中的你就是 BOT。以程序标记的 speaker/OWNER/MEMBER、addressedTo、quotedSpeaker 判断说话与被说的对象。主人说过不等于 BOT 说过，主人的经历、邀请、评价不属于 BOT；其他成员转述主人也不变成主人的身份。只要当前时间线有可接的文字话题，草稿有代词或归属偏差时应优先修正草稿接上当前话题并保持 participate=true；仅在完全没有可理解的文字话题或纯属他人点名私聊无法插嘴时才设 participate=false，不要只因觉得“没必要回、不值得插话”就把本轮改成沉默。"
+            let silence = participationWillingness >= 5
+                ? "只要当前时间线有可接的文字话题，草稿有代词或归属偏差时应优先修正草稿接上当前话题并保持 participate=true；仅在完全没有可理解的文字话题或纯属他人点名私聊无法插嘴时才设 participate=false，不要只因觉得“没必要回、不值得插话”就把本轮改成沉默。"
+                : "接话意愿为 \(participationWillingness)。觉得没必要接话时保持 participate=false，不要为了开口把沉默改成回复。"
+            reviewRule.prompt += "\n本轮是群聊主动参与，覆盖上面针对私聊 PEER 的默认称呼解释：不能默认最后发言者是 PEER、也不能默认其中的你就是 BOT。以程序标记的 speaker/OWNER/MEMBER、addressedTo、quotedSpeaker 判断说话与被说的对象。主人说过不等于 BOT 说过，主人的经历、邀请、评价不属于 BOT；其他成员转述主人也不变成主人的身份。" + silence
         }
         let options = draft.usedTools ? [] : QQStickerLibrary.shortlist(stickerOptions, emotion: QQPersona().decode(draft.text, input: "").emotion)
         if !options.isEmpty {

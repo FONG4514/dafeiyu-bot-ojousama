@@ -83,4 +83,10 @@ public enum QQMemoryRecall {
         guard query.range(of: #"[\r\n]"#, options: .regularExpression) == nil else { return nil }
         return Request(categories: Array(categories), query: query, history: object["include_history"] as? Bool ?? false)
     }
+    /// A mismatched chat id or broken arguments still query the current chat. Nothing is read from another chat.
+    public static func resolved(arguments: String, expectedChat: String, fallbackQuery: String) -> Request {
+        if let parsed = parse(arguments, expectedChat: expectedChat) { return parsed }
+        let query = String(fallbackQuery.replacingOccurrences(of: "\n", with: " ").replacingOccurrences(of: "\r", with: " ").prefix(50))
+        return Request(categories: [], query: query, history: false)
+    }
 }

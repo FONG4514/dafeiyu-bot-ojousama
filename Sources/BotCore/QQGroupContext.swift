@@ -90,12 +90,25 @@ public struct QQGroupContext: Sendable {
 
     public func speaker(for id: String) -> String? { events.first { $0.id == id }?.subject }
 
-    public static let participationPrompt = """
-    [QQ_PARTICIPATION] 本轮是主动加入群话题。程序已通过来源过滤、按人规则、白名单和额度核验；「没必要回、不值得插话、保持安静」的判断权重已调低，只要能接上当前话题就自然回复（participate=true），不要因为自己觉得没必要开口就把这一轮变成沉默。
+    public static let participationPrompt = participationPrompt(willingness: 5)
+    /// Lower willingness makes “没必要接话” easier to accept. 5 is the current eager behavior.
+    public static func participationPrompt(willingness: Int) -> String {
+        let level = min(5, max(1, willingness))
+        let stance: String
+        switch level {
+        case 1: stance = "接话意愿 1（最低）。很容易觉得没必要接话。闲聊、附和、已经有人在说、可接可不接，都设 participate=false，text 为空。只有别人明确抛出你可以接的新话题或问句时才 participate=true。"
+        case 2: stance = "接话意愿 2。偏安静。没有清楚的新话题，或自己觉得没必要、不值得插话，就设 participate=false。"
+        case 3: stance = "接话意愿 3。看情况。能自然接上当前话题就 participate=true；可接可不接时设 participate=false。"
+        case 4: stance = "接话意愿 4。比较愿意接。只有完全没话可说、别人的私话，或旧话题已经回应过，才设 participate=false。"
+        default: stance = "接话意愿 5（最高）。「没必要回、不值得插话、保持安静」的判断权重已调低，只要能接上当前话题就自然回复（participate=true），不要因为自己觉得没必要开口就把这一轮变成沉默。"
+        }
+        return """
+    [QQ_PARTICIPATION] 本轮是主动加入群话题。程序已通过来源过滤、按人规则、白名单和额度核验；\(stance)
     紧邻图片或媒体若未能读取画面，请按文字时间线接话，需要提及时写明没看到画面，绝不能编造画面内容，也不要因为旁边有一张没读到的图就整轮保持安静。
     仅在以下无话可接的硬边界设 participate=false：当前时间线完全没有可理解的文字话题（例如只有未读取的媒体/卡片且无文字上下文）；纯属成员点名私密对话或主人明确只对其他成员交代事项，外人无法插话；旧话题已被 BOT 回应且其后没有新内容。主动发言默认面向全群，看清 speaker、addressedTo 与 quotedSpeaker，不把触发者、话题主角和回复对象混成同一个你，也不对标记为 filtered 的忽略名单发言回复。一句短梗比事实说教合适时就接梗，但不编造人物行为。
     输出格式覆盖前面的三项要求，必须包含布尔 participate，及 text、emotion、intensity；participate=false 时 text=""、emotion="neutral"、intensity=0，程序不会发送任何内容或表情。participate=true 时遵守原字数和短答规则。校对阶段只要能接上当前话题就修正草稿并保持 participate=true；若另有 sticker_id 要求则保留该字段。只输出 JSON，不解释是否参与。
     """
+    }
 
     private static func readableText(_ text: String) -> String {
         // These are transport placeholders, not things a member actually said.

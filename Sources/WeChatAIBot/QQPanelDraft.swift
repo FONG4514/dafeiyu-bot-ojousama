@@ -37,6 +37,7 @@ struct QQReplyForm: Equatable {
     var memoryOptions: QQMemoryOptions
     var groupParticipationEnabled: Bool
     var groupParticipationEvery: Int
+    var groupParticipationWillingness: Int
     init(_ config: QQConfig) {
         ai = config.ai; persona = config.effectivePersona; targets = config.targets
         senderRules = config.effectiveSenderRules
@@ -48,6 +49,7 @@ struct QQReplyForm: Equatable {
         memoryEnabled = config.effectiveMemoryEnabled; memoryOptions = config.effectiveMemoryOptions
         groupParticipationEnabled = config.effectiveGroupParticipationEnabled
         groupParticipationEvery = config.effectiveGroupParticipationEvery
+        groupParticipationWillingness = config.effectiveGroupParticipationWillingness
     }
     func validatedAI() throws -> BotConfig {
         var updated = ai

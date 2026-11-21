@@ -79,6 +79,24 @@ private final class OnlineFixtureProtocol: URLProtocol, @unchecked Sendable {
         client?.urlProtocol(self, didLoad: data); client?.urlProtocolDidFinishLoading(self)
     }
 }
+private final class StopFinishRecallProtocol: URLProtocol, @unchecked Sendable {
+    override class func canInit(with request: URLRequest) -> Bool { true }
+    override class func canonicalRequest(for request: URLRequest) -> URLRequest { request }
+    override func stopLoading() {}
+    override func startLoading() {
+        let object = try! JSONSerialization.jsonObject(with: request.httpBody!) as! [String: Any]
+        let messages = object["messages"] as! [[String: Any]]
+        let data: Data
+        if messages.last?["role"] as? String == "tool" {
+            data = Data(#"{"choices":[{"message":{"content":"{\"text\":\"记住了\",\"emotion\":\"neutral\",\"intensity\":0}"},"finish_reason":"stop"}],"usage":{"total_tokens":2}}"#.utf8)
+        } else {
+            data = Data(#"{"choices":[{"message":{"content":"","tool_calls":[{"id":"mem-1","type":"function","function":{"name":"recall_memory","arguments":"{\"chat\":\"wrong\"}"}}]},"finish_reason":"stop"}],"usage":{"total_tokens":1}}"#.utf8)
+        }
+        client?.urlProtocol(self, didReceive: HTTPURLResponse(url: request.url!, statusCode: 200, httpVersion: nil, headerFields: nil)!, cacheStoragePolicy: .notAllowed)
+        client?.urlProtocol(self, didLoad: data)
+        client?.urlProtocolDidFinishLoading(self)
+    }
+}
 private actor ReservationCount {
     var value = 0
     func add() { value += 1 }
@@ -163,6 +181,23 @@ private actor ReservationCount {
         #expect(result.stickerID == (mode == "valid" ? "fixture-sleep" : nil))
         #expect(!QQPersona().decode(result.text, input: "晚安").isFallback)
         #expect(!result.text.contains("sticker_id"))
+    }
+
+    @Test @MainActor func recallRunsWhenFinishReasonIsNotToolCalls() async throws {
+        let config = URLSessionConfiguration.ephemeral; config.protocolClasses = [StopFinishRecallProtocol.self]
+        let session = URLSession(configuration: config); defer { session.invalidateAndCancel() }
+        var invoked = 0
+        let result = try await DeepSeekClient(session: session).reply(key: "synthetic", config: QQConfig().ai,
+            rule: ChatRule(name: "fixture"), history: [], text: "晚饭", jsonOutput: true,
+            toolHandler: { name, arguments in
+                invoked += 1
+                #expect(name == "recall_memory")
+                let request = QQMemoryRecall.resolved(arguments: arguments, expectedChat: "99999", fallbackQuery: "晚饭吃面")
+                #expect(request.query == "晚饭吃面")
+                return ModelToolResult(content: "合成成员喜欢吃面")
+            }, memoryToolEnabled: true, reserve: {})
+        #expect(invoked == 1)
+        #expect(QQPersona().decode(result.text, input: "晚饭").text == "记住了")
     }
 
 }

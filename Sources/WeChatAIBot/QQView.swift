@@ -22,6 +22,7 @@ struct QQView: View {
             engine.saveReplySettings(ai: try value.validatedAI(), persona: value.persona, onlineEnabled: value.onlineEnabled,
                 visionEnabled: value.visionEnabled, memoryEnabled: value.memoryEnabled,
                 groupParticipationEnabled: value.groupParticipationEnabled, groupParticipationEvery: value.groupParticipationEvery,
+                groupParticipationWillingness: value.groupParticipationWillingness,
                 memoryOptions: value.memoryOptions, enabledTargets: Set(value.targets.filter(\.enabled).map(\.key)),
                 senderRules: value.senderRules, ignoredSenders: ignored, apiProfiles: value.apiProfiles,
                 relayKey: editor.relayKey, backupRelayKey: editor.backupRelayKey)
@@ -379,6 +380,13 @@ struct QQView: View {
                                 .frame(maxWidth: .infinity, alignment: .leading)
                             PanelNumberField("主动接话触发条数", value: $editor.replyDraft.value.groupParticipationEvery, in: 1...1000, unit: "条")
                                 .frame(maxWidth: .infinity)
+                            Picker("接话意愿", selection: $editor.replyDraft.value.groupParticipationWillingness) {
+                                Text("1 最低").tag(1)
+                                Text("2 偏低").tag(2)
+                                Text("3 看情况").tag(3)
+                                Text("4 较愿意").tag(4)
+                                Text("5 最高").tag(5)
+                            }.frame(maxWidth: .infinity)
                         }
                         ForEach($editor.replyDraft.value.targets) { $target in
                             if target.group {

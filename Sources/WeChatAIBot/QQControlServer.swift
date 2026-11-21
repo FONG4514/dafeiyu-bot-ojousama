@@ -249,20 +249,21 @@ import BotCore
                     if let options = request.memoryOptions { updated.memoryOptions = options }
                     if let value = request.groupParticipationEnabled { updated.groupParticipationEnabled = value }
                     if let value = request.groupParticipationEvery { updated.groupParticipationEvery = value }
+                    if let value = request.groupParticipationWillingness { updated.groupParticipationWillingness = value }
                     try updated.validate()
                     if let profileKeys = request.apiProfileKeys {
                         for (baseURL, key) in profileKeys where !key.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
                             try engine.setAPIKey(key, for: baseURL, persist: request.persistRelayKey ?? false)
                         }
                     }
-                    engine.saveReplySettings(ai: updated.ai, persona: updated.effectivePersona, onlineEnabled: updated.effectiveOnlineEnabled, visionEnabled: updated.effectiveVisionEnabled, memoryEnabled: updated.effectiveMemoryEnabled, groupParticipationEnabled: updated.effectiveGroupParticipationEnabled, groupParticipationEvery: updated.effectiveGroupParticipationEvery, memoryOptions: updated.effectiveMemoryOptions, enabledTargets: request.enabled.map { Set($0) }, senderPersonas: request.senderPersonas, senderRules: request.senderRules, ignoredSenders: request.ignoredSenders, apiProfiles: request.apiProfiles, relayKey: request.relayKey ?? "", backupRelayKey: request.backupRelayKey ?? "", persistRelayKey: request.persistRelayKey ?? false)
+                    engine.saveReplySettings(ai: updated.ai, persona: updated.effectivePersona, onlineEnabled: updated.effectiveOnlineEnabled, visionEnabled: updated.effectiveVisionEnabled, memoryEnabled: updated.effectiveMemoryEnabled, groupParticipationEnabled: updated.effectiveGroupParticipationEnabled, groupParticipationEvery: updated.effectiveGroupParticipationEvery, groupParticipationWillingness: request.groupParticipationWillingness, memoryOptions: updated.effectiveMemoryOptions, enabledTargets: request.enabled.map { Set($0) }, senderPersonas: request.senderPersonas, senderRules: request.senderRules, ignoredSenders: request.ignoredSenders, apiProfiles: request.apiProfiles, relayKey: request.relayKey ?? "", backupRelayKey: request.backupRelayKey ?? "", persistRelayKey: request.persistRelayKey ?? false)
                 case "start":
                     guard engine.connected, !engine.running, !engine.busy, !engine.runtimeBusy else { throw AppFailure.message("请先连接或暂停") }
                     let duration = request.singleReply == true ? 15 : (request.durationMinutes ?? 120)
                     guard (0...4320).contains(duration) else { throw AppFailure.message("运行时长必须为 0 至 4320 分钟") }
                     guard request.ai == nil, request.persona == nil, request.senderPersonas == nil, request.senderRules == nil, request.ignoredSenders == nil, request.apiProfiles == nil, request.enabled == nil,
                           request.onlineEnabled == nil, request.visionEnabled == nil, request.memoryEnabled == nil,
-                          request.memoryOptions == nil, request.groupParticipationEnabled == nil, request.groupParticipationEvery == nil else {
+                          request.memoryOptions == nil, request.groupParticipationEnabled == nil, request.groupParticipationEvery == nil, request.groupParticipationWillingness == nil else {
                         throw AppFailure.message("开始回复只使用已保存配置，请先单独保存范围与回复设置")
                     }
                     engine.start(singleReply: request.singleReply ?? false, duration: duration == 0 ? nil : Double(duration * 60))
@@ -329,6 +330,7 @@ import BotCore
         var baseURL: String?
         var groupParticipationEnabled: Bool?
         var groupParticipationEvery: Int?
+        var groupParticipationWillingness: Int?
         var visualTools: QQVisualConfig?
         var googleVisionKey: String?
         var persistVisualCredentials: Bool?

@@ -24,5 +24,7 @@ struct QQMemoryRankTests {
         #expect(QQMemoryMode.balanced.trigger(base: QQMemoryOptions(), superLimited: false).messages == 20)
         #expect(QQMemoryRecall.parse(#"{"chat":"99999","categories":["偏好"],"query":"晚饭"}"#, expectedChat: "99999")?.query == "晚饭")
         #expect(QQMemoryRecall.parse(#"{"chat":"54321"}"#, expectedChat: "99999") == nil)
+        #expect(QQMemoryRecall.resolved(arguments: #"{"chat":"54321","query":"晚饭\n换行"}"#, expectedChat: "99999", fallbackQuery: "当前话题吃面").query == "当前话题吃面")
+        #expect(QQMemoryRecall.resolved(arguments: #"{"chat":"99999","query":"晚饭"}"#, expectedChat: "99999", fallbackQuery: "别的").query == "晚饭")
     }
 }
