@@ -50,6 +50,9 @@ public struct QQSenderPersona: Codable, Equatable, Identifiable, Sendable {
     public var names: [String]?
     /// Optional short attitude note for relationship cards; speaking style still follows the current speaker.
     public var attitude: String?
+    /// Easter egg. Only an explicit true lets `/hit` aim at this user. Missing values stay off.
+    public var bully: Bool?
+    public var bullies: Bool { bully == true }
     public var effectiveNames: [String] { get { names ?? [] } set { names = newValue } }
     public var attitudeSummary: String {
         if let raw = attitude?.trimmingCharacters(in: .whitespacesAndNewlines), !raw.isEmpty { return raw }
@@ -64,6 +67,14 @@ public struct QQSenderPersona: Codable, Equatable, Identifiable, Sendable {
     }
     public func isMentioned(in message: QQIncoming) -> Bool {
         message.sender != number && (message.mentionedUsers.contains(number) || effectiveNames.contains { message.text.localizedCaseInsensitiveContains($0) })
+    }
+    /// A marked user named by this `/hit`, either with a real @ or the text after the command.
+    public func isHitTarget(in message: QQIncoming, phrase: String) -> Bool {
+        guard bullies else { return false }
+        if message.mentionedUsers.contains(number) { return true }
+        let name = phrase.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !name.isEmpty, name != "打一下" else { return false }
+        return number == name || effectiveNames.contains { $0.compare(name, options: [.caseInsensitive, .diacriticInsensitive]) == .orderedSame }
     }
 }
 public struct QQConfig: Codable, Equatable, Sendable {
@@ -138,6 +149,10 @@ public struct QQConfig: Codable, Equatable, Sendable {
     // Private events carry the peer as sender, so one rule covers private chats and groups.
     public func senderPersona(for message: QQIncoming) -> QQSenderPersona? {
         effectiveSenderPersonas.first { $0.number == message.sender }
+    }
+    /// The first marked user this `/hit` actually names. Unmarked people are not targets.
+    public func bullyTarget(_ message: QQIncoming, phrase: String) -> QQSenderPersona? {
+        effectiveSenderPersonas.first { $0.isHitTarget(in: message, phrase: phrase) }
     }
     public func persona(for message: QQIncoming) -> QQPersona {
         guard let bound = senderPersona(for: message) else { return persona(for: message.key) }

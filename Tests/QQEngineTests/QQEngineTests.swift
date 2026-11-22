@@ -1022,6 +1022,6 @@ private final class DelayedModelProtocol: URLProtocol, @unchecked Sendable {
         #expect(engine.logs.contains { $0.kind == "memory" && $0.detail == "已调用记忆查询" })
         #expect(engine.logs.contains { $0.kind == "memory" && $0.detail.contains("记忆查询完成（新会话）") })
         #expect(DelayedModelProtocol.counts.bodies.contains { $0.contains("这是一个新会话") && $0.contains("recall_memory") })
-        #expect(DelayedModelProtocol.counts.bodies.contains { $0.contains("本轮已查询本会话记忆") && $0.contains("合成成员约定去天文馆") })
+        #expect(DelayedModelProtocol.counts.bodies.contains { $0.contains("本轮已查询本会话记忆") && $0.contains("合成成员约定去天文馆") && $0.contains("\"name\":\"recall_memory\"") })
     }
 }

@@ -252,7 +252,10 @@ function senderPersonaRow(item={}) {
   style.addEventListener('change',toggleCustom);toggleCustom();
   const names=document.createElement('input');names.className='sender-names';names.autocomplete='off';names.placeholder='可选：QQ 名称/群昵称，逗号分隔，用于识别群里提到他';names.setAttribute('aria-label','用于识别提到该用户的 QQ 名称');names.value=(item.names??[]).join('，');
   const attitude=document.createElement('input');attitude.className='sender-attitude';attitude.maxLength=120;attitude.autocomplete='off';attitude.placeholder='可选：关系卡片态度简述（提及该用户时注入，留空按上方性格自动生成）';attitude.setAttribute('aria-label','对该用户的态度简述');attitude.value=item.attitude??'';
-  row.append(number,style,remove,names,attitude,name,prompt);
+  const bullyLabel=document.createElement('label');bullyLabel.className='sender-bully';
+  const bully=document.createElement('input');bully.type='checkbox';bully.className='sender-bully-input';bully.checked=!!item.bully;
+  bullyLabel.append(bully,document.createTextNode('欺负他'));
+  row.append(number,style,remove,names,attitude,bullyLabel,name,prompt);
   return row;
 }
 function groupIgnoredRow(target) {
@@ -348,6 +351,7 @@ function senderPersonaDrafts() {
     const attitude=row.querySelector('.sender-attitude')?.value.trim()||'';
     const item={id:row.dataset.id,number:row.querySelector('.sender-number').value.trim(),style:row.querySelector('.sender-style').value,customName:row.querySelector('.sender-name').value.trim(),customPrompt:row.querySelector('.sender-prompt').value.trim(),names:row.querySelector('.sender-names').value.split(/[,，\n]/).map(s=>s.trim()).filter(Boolean)};
     if(attitude) item.attitude=attitude;
+    if(row.querySelector('.sender-bully-input')?.checked) item.bully=true;
     return item;
   });
 }

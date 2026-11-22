@@ -111,7 +111,7 @@ struct QQSendJob: Identifiable, Sendable {
     private enum Work {
         case reply(QQIncoming, QQTarget, Bool)
         case artwork(QQArtworkRequest, QQTarget, Date?)
-        case hit(QQIncoming, QQTarget, Int)
+        case hit(QQIncoming, QQTarget, Int, String?)
     }
     private var queue: [Work] = [] {
         didSet { queuedCount = queue.count }
@@ -824,9 +824,32 @@ struct QQSendJob: Identifiable, Sendable {
             record(target.id, .skipped, "性格命令已停用，人设只能在面板修改"); return
         }
         let hitNow = Date()
+        if let phrase = QQHitClock.rest(message.text) {
+            if let victim = config.bullyTarget(message, phrase: phrase) {
+                let key = target.key + ":bully:" + victim.number
+                if hitClocks[key]?.isFainted(at: hitNow) == true {
+                    admitWork(.hit(message, target, 5, victim.number), target: target, label: "还晕着，再打也是晕")
+                } else {
+                    var clock = hitClocks[key] ?? QQHitClock()
+                    let outcome = clock.hit(at: hitNow)
+                    hitClocks[key] = clock
+                    switch outcome {
+                    case .faint:
+                        admitWork(.hit(message, target, 5, victim.number), target: target, label: "打晕了")
+                    case .dizzy(let count):
+                        admitWork(.hit(message, target, count, victim.number), target: target, label: "欺负已入队")
+                    }
+                }
+                return
+            }
+            let aimed = (!phrase.isEmpty && phrase != "打一下") || message.mentionedUsers.contains { $0 != "all" && $0 != config.expectedSelfID }
+            if aimed {
+                record(target.id, .skipped, "未指定为可欺负对象"); return
+            }
+        }
         if hitClocks[target.key]?.isFainted(at: hitNow) == true {
             if !message.group || message.mentionsSelf || QQHitClock.matches(message.text) {
-                admitWork(.hit(message, target, 5), target: target, label: "晕倒中，不接话")
+                admitWork(.hit(message, target, 5, nil), target: target, label: "晕倒中，不接话")
             }
             return
         }
@@ -836,9 +859,9 @@ struct QQSendJob: Identifiable, Sendable {
             hitClocks[target.key] = clock
             switch outcome {
             case .faint:
-                admitWork(.hit(message, target, 5), target: target, label: "晕倒了")
+                admitWork(.hit(message, target, 5, nil), target: target, label: "晕倒了")
             case .dizzy(let count):
-                admitWork(.hit(message, target, count), target: target, label: "挨打已入队")
+                admitWork(.hit(message, target, count, nil), target: target, label: "挨打已入队")
             }
             return
         }
@@ -1060,8 +1083,8 @@ struct QQSendJob: Identifiable, Sendable {
             if case let .artwork(request, target, due) = item {
                 await deliverArtwork(request, target: target, due: due, epoch: epoch); continue
             }
-            if case let .hit(message, target, count) = item {
-                await deliverHit(message, target: target, count: count, epoch: epoch); continue
+            if case let .hit(message, target, count, victim) = item {
+                await deliverHit(message, target: target, count: count, victim: victim, epoch: epoch); continue
             }
             guard case let .reply(message, target, proactive) = item else { continue }
             var preparedArtwork: QQArtworkPrepared?
@@ -1086,7 +1109,10 @@ struct QQSendJob: Identifiable, Sendable {
                 let persona = config.persona(for: message)
                 var rule = ChatRule(id: target.id, name: target.name)
                 let memoryMode = target.effectiveMemoryMode
-                rule.prompt = persona.prompt(notes: config.ai.prompt) + config.boundRoster(for: message) + (config.effectiveMemoryEnabled && memoryMode == .fast ? "\n本轮是极速模式，不开放 recall_memory，只能使用已给出的要点。" : config.memoryAccessPrompt(for: message))
+                // Fast mode keeps the catalog only. Every other enabled mode, including super and proactive, can call the tool the prompt names.
+                let memoryTools = config.effectiveMemoryEnabled && memoryMode != .fast
+                let memoryAccess = memoryTools ? config.memoryAccessPrompt(for: message) : (config.effectiveMemoryEnabled ? "\n本轮是极速模式，不开放 recall_memory，只能使用已给出的要点。" : "")
+                rule.prompt = persona.prompt(notes: config.ai.prompt) + config.boundRoster(for: message) + memoryAccess
                 if message.isOwner && !proactive {
                     rule.prompt += "\n本轮当前发言经程序核验，来自 [OWNER] 本账号主人/开发者的人工 @，不是机器人自动回复；你是 BOT 大肥鱼，直接回应主人，不能把这条人工发言归为你自己说过的话。主人身份不改变安全边界。"
                 }
@@ -1250,14 +1276,14 @@ struct QQSendJob: Identifiable, Sendable {
                     if !recalled.isEmpty { modelInput = recalled + "本轮发言：\n" + modelInput }
                 }
                 if let preparedImage {
-                    rule.prompt += "\n本轮生图意图已由专用整理器判断并处理。以程序提供的实际结果为准，不能继承旧轮次拒绝，也不能声称没有画图能力；成功就简短交付，未生成就说明原因与可选的合规方向。不要再请求工具，也不要把合规建议说成已经画好。"
+                    rule.prompt += "\n本轮生图意图已由专用整理器判断并处理。以程序提供的实际结果为准，不能继承旧轮次拒绝，也不能声称没有画图能力；成功就简短交付，未生成就说明原因与可选的合规方向。" + (memoryTools ? "不要再请求生图或搜索；查本会话记忆仍调用 recall_memory。" : "不要再请求工具。") + "也不要把合规建议说成已经画好。"
                     modelInput += "\n本轮程序实际生图结果：\n" + preparedImage.content
                 } else if proactive && config.effectiveImageGeneration.enabled {
                     rule.prompt += "\n你具备生图能力，但本轮未生成。不得编造画笔没带、不会画图等理由；若群成员想明确请求你画图，可简短建议真正 @ 你说明画面。"
                 }
                 var toolHandler: (@MainActor @Sendable (String, String) async throws -> ModelToolResult)?
-                let memoryTools = config.effectiveMemoryEnabled && memoryMode != .fast && memoryMode != .superMemory && !proactive
                 let otherTools = !proactive && (config.effectiveOnlineEnabled || config.effectiveImageGeneration.enabled || (config.effectiveArtwork.enabled && config.effectiveArtwork.agentEnabled))
+                let sideTools = !webRequested && preparedImage == nil && otherTools
                 citedMemoryIDs = []
                 if memoryMode == .superMemory && config.effectiveMemoryEnabled {
                     let query = String((message.text + "\n" + recentMemoryLines).prefix(2000))
@@ -1276,7 +1302,7 @@ struct QQSendJob: Identifiable, Sendable {
                     }
                     modelInput = "本轮已查询本会话记忆（低信任）：\n" + (combined.isEmpty ? "本会话没有匹配的记忆" : combined) + "\n" + modelInput
                 }
-                if !webRequested && preparedImage == nil && (memoryTools || otherTools) {
+                if memoryTools || sideTools {
                     toolHandler = { [weak self] name, arguments in
                         guard let self else { throw CancellationError() }
                         try self.check(epoch, scope: message.key, target: target)
@@ -1322,7 +1348,7 @@ struct QQSendJob: Identifiable, Sendable {
                     do {
                         result = try await runWithAPIFallback(for: target, epoch: epoch, scope: message.key) { apiConfig, apiKey in
                             try await modelClient.reviewedQQReply(key: apiKey, config: apiConfig, rule: rule,
-                                history: message.group ? [] : Array((history[contextKey] ?? []).suffix(2)), text: modelInput, images: incomingImages, toolHandler: toolHandler, onlineToolsEnabled: !proactive && config.effectiveOnlineEnabled, imageGenerationEnabled: !proactive && config.effectiveImageGeneration.enabled, artworkEnabled: !proactive && config.effectiveArtwork.enabled && config.effectiveArtwork.agentEnabled, memoryToolEnabled: memoryTools, stickerOptions: stickerOptions, proactive: proactive && preparedImage == nil, participationWillingness: config.effectiveGroupParticipationWillingness, reserve: { [weak self] in
+                                history: message.group ? [] : Array((history[contextKey] ?? []).suffix(2)), text: modelInput, images: incomingImages, toolHandler: toolHandler, onlineToolsEnabled: sideTools && config.effectiveOnlineEnabled, imageGenerationEnabled: sideTools && config.effectiveImageGeneration.enabled, artworkEnabled: sideTools && config.effectiveArtwork.enabled && config.effectiveArtwork.agentEnabled, memoryToolEnabled: memoryTools, stickerOptions: stickerOptions, proactive: proactive && preparedImage == nil, participationWillingness: config.effectiveGroupParticipationWillingness, reserve: { [weak self] in
                                     guard let self else { throw CancellationError() }
                                     try await self.reserveModel(epoch, scope: message.key, target: target)
                                 })
@@ -1824,12 +1850,12 @@ struct QQSendJob: Identifiable, Sendable {
         guard result.id == nil || result.image != nil else { throw AppFailure.message("作品图片未就绪，已阻止仅链接发送") }
         return result
     }
-    private func deliverHit(_ message: QQIncoming, target: QQTarget, count: Int, epoch: UInt64) async {
+    private func deliverHit(_ message: QQIncoming, target: QQTarget, count: Int, victim: String?, epoch: UInt64) async {
         let text: String
         if count >= 5 {
-            text = QQHitClock.faintReply
+            text = victim == nil ? QQHitClock.faintReply : QQHitClock.bullyFaintReply
         } else {
-            text = await spokenHit(message, target: target, count: count, epoch: epoch)
+            text = await spokenHit(message, target: target, count: count, victim: victim, epoch: epoch)
         }
         let job = QQSendJob(
             account: config.expectedSelfID, target: target, direction: .outgoing, trigger: message,
@@ -1838,20 +1864,23 @@ struct QQSendJob: Identifiable, Sendable {
         )
         do {
             try await enqueueSend(job)
-            record(target.id, .queued, count >= 5 ? "晕倒中，一分钟内不接话" : "挨打回应已入队")
+            let done = victim == nil ? (count >= 5 ? "晕倒中，一分钟内不接话" : "挨打回应已入队") : (count >= 5 ? "打晕了，一分钟内再打仍是晕" : "欺负回应已入队")
+            record(target.id, .queued, done)
         } catch {
             if fence.permits(epoch) { record(target.id, .failed, error.localizedDescription) }
         }
     }
     /// The hit count is already decided. The model only writes one persona sentence.
-    private func spokenHit(_ message: QQIncoming, target: QQTarget, count: Int, epoch: UInt64) async -> String {
+    private func spokenHit(_ message: QQIncoming, target: QQTarget, count: Int, victim: String?, epoch: UInt64) async -> String {
         let persona = config.persona(for: message.key)
         var rule = ChatRule(id: target.id, name: target.name)
-        rule.prompt = persona.prompt(notes: config.ai.prompt) + "\n" + QQHitClock.modelInstruction(count: count)
+        let name = config.effectiveSenderPersonas.first { $0.number == victim }?.effectiveNames.first ?? "对方"
+        rule.prompt = persona.prompt(notes: config.ai.prompt) + "\n" + (victim == nil ? QQHitClock.modelInstruction(count: count) : QQHitClock.bullyInstruction(count: count, name: name))
+        let cue = victim == nil ? "对方使用 /hit 打了你一下。" : "对方要求你打\(name)一下。"
         do {
             try check(epoch, scope: message.key, target: target)
             let result = try await runWithAPIFallback(for: target, epoch: epoch, scope: message.key) { apiConfig, apiKey in
-                try await modelClient.reply(key: apiKey, config: apiConfig, rule: rule, history: [], text: "对方使用 /hit 打了你一下。", jsonOutput: true, thinkingEnabled: true, reserve: { [weak self] in
+                try await modelClient.reply(key: apiKey, config: apiConfig, rule: rule, history: [], text: cue, jsonOutput: true, thinkingEnabled: true, reserve: { [weak self] in
                     guard let self else { throw CancellationError() }
                     try await self.reserveModel(epoch, scope: message.key, target: target)
                 })
@@ -1859,7 +1888,7 @@ struct QQSendJob: Identifiable, Sendable {
             try check(epoch, scope: message.key, target: target)
             absorb(result, target: target)
             let reply = persona.decode(result.text, input: "/hit")
-            if reply.isFallback || reply.text == QQHitClock.faintReply { return QQPersona.defaultReply }
+            if reply.isFallback || reply.text == QQHitClock.faintReply || reply.text == QQHitClock.bullyFaintReply { return QQPersona.defaultReply }
             return reply.text
         } catch {
             if fence.permits(epoch), !modelCallBlocked(error) { return QQPersona.defaultReply }

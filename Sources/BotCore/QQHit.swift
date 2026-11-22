@@ -32,11 +32,24 @@ public struct QQHitClock: Equatable, Sendable {
         return .dizzy(hits.count)
     }
 
-    public static func matches(_ text: String) -> Bool {
+    /// Text after `/hit`. `nil` means this is not the command. Empty or `打一下` still hits the bot.
+    public static func rest(_ text: String) -> String? {
         let value = text.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard let range = value.range(of: #"^/hit(?=$|\s)"#, options: [.regularExpression, .caseInsensitive]) else { return false }
+        guard let range = value.range(of: #"^/hit(?=$|\s)"#, options: [.regularExpression, .caseInsensitive]) else { return nil }
         let rest = String(value[range.upperBound...]).trimmingCharacters(in: .whitespacesAndNewlines)
+        guard rest.count <= 20, rest.range(of: #"[\r\n]"#, options: .regularExpression) == nil else { return nil }
+        return rest
+    }
+    public static func matches(_ text: String) -> Bool {
+        guard let rest = rest(text) else { return false }
         return rest.isEmpty || rest == "打一下"
+    }
+    public static let bullyFaintReply = "[打晕惹]"
+    /// The bot is hitting a marked person. The count still belongs to the program.
+    public static func bullyInstruction(count: Int, name: String) -> String {
+        let step = min(4, max(1, count))
+        let degree = ["刚挨到，还站得住。", "比上一句更晕，开始晃。", "站不稳，眼前发花。", "快倒下，但这一下还没晕。"][step - 1]
+        return "程序已经点清：这是三分钟窗口内打 \(name) 的第 \(step) 下。你在欺负对方，不是自己挨打。次数和时间都由程序统计，你不能改次数，也不能判断要不要把对方打晕。第 5 下和随后一分钟由程序自己回复，这一下不要写打晕。只按当前人设写一句短话，打的是 \(name)：\(degree)"
     }
 
     /// The model only writes the sentence. It must not recount hits or decide the faint.
