@@ -135,10 +135,10 @@ private final class PersonalityModelProtocol: URLProtocol, @unchecked Sendable {
             #expect(prompts.prefix(2).allSatisfy { !$0.contains("你认识的熟人") })
             #expect(prompts.prefix(2).allSatisfy { $0.contains("[关系卡片]") && $0.contains("（就是当前发言者）") })
             #expect(prompts.suffix(2).allSatisfy { $0.contains("[关系卡片]") && $0.contains("（本轮被提到）") && $0.contains("不整段换成被提到者的人设") })
-            #expect(prompts.prefix(2).allSatisfy { $0.contains("本轮记忆只属于群 99999") && $0.contains("chat=\"99999\"") })
-            #expect(prompts.suffix(2).allSatisfy { $0.contains("chat=\"88888\"") && !$0.contains("chat=\"99999\"") })
             if mode == "proactive" { #expect(prompts.first?.contains("[QQ_PARTICIPATION]") == true) }
             if mode == "memory" {
+                #expect(prompts.prefix(2).allSatisfy { $0.contains("本轮记忆只属于群 99999") && $0.contains("chat=\"99999\"") && $0.contains("recall_memory") })
+                #expect(prompts.suffix(2).allSatisfy { $0.contains("chat=\"88888\"") && !$0.contains("chat=\"99999\"") })
                 let group = try #require(engine.memoryBooks["12345:group:99999"])
                 #expect(group.recent.contains { $0.id == "2" && $0.subject.hasPrefix("MEMBER_") })
                 #expect(engine.memoryBooks["12345:persona:" + bound.id.uuidString] == nil)
@@ -148,6 +148,8 @@ private final class PersonalityModelProtocol: URLProtocol, @unchecked Sendable {
                 #expect(!other.recent.contains { $0.id == "2" })
                 #expect(!other.recent.contains { $0.text.contains("（此句提到 PEER）") })
                 #expect(prompts.allSatisfy { $0.contains("私聊与群聊互不读取") })
+            } else {
+                #expect(prompts.allSatisfy { !$0.contains("recall_memory") && !$0.contains("本轮记忆只属于") })
             }
         }
     }

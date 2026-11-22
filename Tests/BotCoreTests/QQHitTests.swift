@@ -63,7 +63,7 @@ struct QQHitTests {
         let bot = QQIncoming(id: "4", sender: "77777", target: "99999", group: true, text: "/hit", time: 1, replyTo: nil, images: [])
         #expect(config.bullyTarget(bot, phrase: "") == nil)
         #expect(config.bullyTarget(bot, phrase: "打一下") == nil)
-        let stored = try JSONDecoder().decode(QQSenderPersona.self, from: Data(#"{"number":"54321","style":"gentle"}"#.utf8))
+        let stored = try JSONDecoder().decode(QQSenderPersona.self, from: Data(#"{"id":"00000000-0000-0000-0000-000000000001","number":"54321","style":"gentle"}"#.utf8))
         #expect(!stored.bullies)
     }
 }
