@@ -17,11 +17,15 @@ public struct ChatRule: Codable, Identifiable, Equatable, Sendable {
 }
 public enum QQAPIPreset: String, Codable, CaseIterable, Sendable {
     case deepseek
+    case kimi
+    case glm
     case ciallo
     case custom
     public var title: String {
         switch self {
         case .deepseek: return "DeepSeek 官方"
+        case .kimi: return "Kimi 官方"
+        case .glm: return "智谱 GLM 官方"
         case .ciallo: return "Ciallo 中转站"
         case .custom: return "自定义中转站"
         }
@@ -29,15 +33,37 @@ public enum QQAPIPreset: String, Codable, CaseIterable, Sendable {
     public var defaultBaseURL: String {
         switch self {
         case .deepseek: return QQAPIProfile.officialBaseURL
+        case .kimi: return QQAPIProfile.kimiBaseURL
+        case .glm: return QQAPIProfile.glmBaseURL
         case .ciallo: return QQAPIProfile.cialloBaseURL
         case .custom: return ""
         }
     }
+    /// Empty means the model list must be fetched; do not invent a name the station no longer lists.
     public var defaultModel: String {
         switch self {
         case .deepseek: return "deepseek-flash"
-        case .ciallo: return "deepseek-v4.1-flash"
-        case .custom: return ""
+        case .kimi: return "kimi-latest"
+        case .glm: return "glm-4-flash"
+        case .ciallo, .custom: return ""
+        }
+    }
+    public var keyTitle: String {
+        switch self {
+        case .deepseek: return "DeepSeek API Key"
+        case .kimi: return "Kimi 官方 API Key"
+        case .glm: return "智谱 GLM 官方 API Key"
+        case .ciallo: return "Ciallo 中转站 Key"
+        case .custom: return "中转站 API Key"
+        }
+    }
+    public static func detect(_ baseURL: String) -> QQAPIPreset {
+        switch BotConfig.normalizeBaseURL(baseURL) {
+        case QQAPIProfile.officialBaseURL: return .deepseek
+        case QQAPIProfile.kimiBaseURL: return .kimi
+        case QQAPIProfile.glmBaseURL: return .glm
+        case QQAPIProfile.cialloBaseURL: return .ciallo
+        default: return .custom
         }
     }
 }
@@ -45,6 +71,8 @@ public enum QQAPIPreset: String, Codable, CaseIterable, Sendable {
 public struct QQAPIProfile: Codable, Equatable, Identifiable, Sendable {
     public static let limit = 8
     public static let officialBaseURL = "https://api.deepseek.com"
+    public static let kimiBaseURL = "https://api.moonshot.cn/v1"
+    public static let glmBaseURL = "https://open.bigmodel.cn/api/paas/v4"
     public static let cialloBaseURL = "https://sub.ciallo.cafe/v1"
     public var id: String
     public var name: String

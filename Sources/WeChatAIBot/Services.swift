@@ -146,8 +146,7 @@ struct DeepSeekClient {
         let isOfficial = BotConfig.normalizeBaseURL(baseURL) == QQAPIProfile.officialBaseURL
         let textOnly = ["text-only", "novision", "no-vision"].contains { lower.contains($0) }
         if !isOfficial {
-            let relayModel = trimmed.isEmpty ? "deepseek-v4.1-flash" : trimmed
-            return (relayModel, !textOnly)
+            return (trimmed, !textOnly)
         }
         let normalized = lower == "deepseek-v4-flash-vision-exp" ? "deepseek-flash" : (trimmed.isEmpty ? "deepseek-flash" : trimmed)
         guard hasImages else { return (normalized, true) }
@@ -159,6 +158,11 @@ struct DeepSeekClient {
     static func endpointURL(baseURL: String = QQAPIProfile.officialBaseURL, path: String) throws -> URL {
         let root = try BotConfig.validatedBaseURL(baseURL)
         return root.appendingPathComponent(path)
+    }
+    /// DeepSeek-only request fields. Kimi, GLM, and the current Ciallo catalog reject them.
+    static func usesDeepSeekThinking(baseURL: String, model: String) -> Bool {
+        if BotConfig.normalizeBaseURL(baseURL) == QQAPIProfile.officialBaseURL { return true }
+        return model.lowercased().contains("deepseek")
     }
     func models(key: String, baseURL: String = QQAPIProfile.officialBaseURL) async throws -> [String] {
         let data = try await request(baseURL: baseURL, path: "models", key: key, body: nil)
@@ -223,10 +227,12 @@ struct DeepSeekClient {
         let effectiveMaxTokens = thinkingOn ? max(8192, config.maxTokens) : hasVisionPayload ? max(4096, config.maxTokens) : !config.isOfficialAPI ? max(1024, config.maxTokens) : config.maxTokens
         // At most one tool round, followed by a final answer. Every API attempt consumes quota.
         for round in 0...1 {
-            var parameters: [String: Any] = ["model": modelRoute.model, "messages": messages, "max_tokens": effectiveMaxTokens,
-                                           "stream": false, "thinking": ["type": thinkingOn ? "enabled" : "disabled"]]
-            if thinkingOn { parameters["reasoning_effort"] = effort.rawValue }
-            if jsonOutput && (toolHandler == nil || round > 0) { parameters["response_format"] = ["type": "json_object"] }
+            var parameters: [String: Any] = ["model": modelRoute.model, "messages": messages, "max_tokens": effectiveMaxTokens, "stream": false]
+            if Self.usesDeepSeekThinking(baseURL: config.effectiveBaseURL, model: modelRoute.model) {
+                parameters["thinking"] = ["type": thinkingOn ? "enabled" : "disabled"]
+                if thinkingOn { parameters["reasoning_effort"] = effort.rawValue }
+            }
+            if jsonOutput && !modelRoute.model.lowercased().contains("claude") && (toolHandler == nil || round > 0) { parameters["response_format"] = ["type": "json_object"] }
             if toolHandler != nil && round == 0 {
                 var tools = (onlineToolsEnabled ? QQOnlineTools.definitions : []) + (imageGenerationEnabled ? [QQImageGenerator.definition] : []) + (artworkEnabled ? [QQArtworkLibrary.definition] : [])
                 if memoryToolEnabled { tools.append(QQMemoryRecall.definition) }

@@ -397,6 +397,16 @@ struct QQSendJob: Identifiable, Sendable {
         return (try? Keychain.load(account: Self.credentialAccount(for: normalized), allowAuthenticationUI: false)) ?? ""
     }
     func hasAPIKey(for baseURL: String) -> Bool { !apiKey(for: baseURL).isEmpty }
+    @Published private(set) var availableModels: [String] = []
+    func refreshModels(baseURL: String, key: String) async throws -> [String] {
+        let normalized = BotConfig.normalizeBaseURL(baseURL)
+        let supplied = key.trimmingCharacters(in: .whitespacesAndNewlines)
+        let secret = supplied.isEmpty ? apiKey(for: normalized) : supplied
+        guard !secret.isEmpty else { throw AppFailure.message("请先填写该服务的 API Key，再获取模型") }
+        let models = try await modelClient.models(key: secret, baseURL: normalized)
+        availableModels = models
+        return models
+    }
     func resolvedAPIRoutes(for target: QQTarget?) -> [(config: BotConfig, key: String, label: String)] {
         var routes: [(config: BotConfig, key: String, label: String)] = []
         let primaryConfig = config.apiConfig(for: target)
@@ -824,44 +834,29 @@ struct QQSendJob: Identifiable, Sendable {
             record(target.id, .skipped, "性格命令已停用，人设只能在面板修改"); return
         }
         let hitNow = Date()
-        if let phrase = QQHitClock.rest(message.text) {
-            if let victim = config.bullyTarget(message, phrase: phrase) {
-                let key = target.key + ":bully:" + victim.number
-                if hitClocks[key]?.isFainted(at: hitNow) == true {
-                    admitWork(.hit(message, target, 5, victim.number), target: target, label: "还晕着，再打也是晕")
-                } else {
-                    var clock = hitClocks[key] ?? QQHitClock()
-                    let outcome = clock.hit(at: hitNow)
-                    hitClocks[key] = clock
-                    switch outcome {
-                    case .faint:
-                        admitWork(.hit(message, target, 5, victim.number), target: target, label: "打晕了")
-                    case .dizzy(let count):
-                        admitWork(.hit(message, target, count, victim.number), target: target, label: "欺负已入队")
-                    }
+        if QQHitClock.rest(message.text) != nil {
+            guard let victim = config.hitVictim(in: message) else {
+                record(target.id, .skipped, "没有勾选欺负他，不触发"); return
+            }
+            let key = target.key + ":bully:" + victim.number
+            if hitClocks[key]?.isFainted(at: hitNow) == true {
+                admitWork(.hit(message, target, 5, victim.number), target: target, label: "还晕着，再打也是晕")
+            } else {
+                var clock = hitClocks[key] ?? QQHitClock()
+                let outcome = clock.hit(at: hitNow)
+                hitClocks[key] = clock
+                switch outcome {
+                case .faint:
+                    admitWork(.hit(message, target, 5, victim.number), target: target, label: "打晕了")
+                case .dizzy(let count):
+                    admitWork(.hit(message, target, count, victim.number), target: target, label: "欺负已入队")
                 }
-                return
             }
-            let aimed = (!phrase.isEmpty && phrase != "打一下") || message.mentionedUsers.contains { $0 != "all" && $0 != config.expectedSelfID }
-            if aimed {
-                record(target.id, .skipped, "未指定为可欺负对象"); return
-            }
+            return
         }
         if hitClocks[target.key]?.isFainted(at: hitNow) == true {
             if !message.group || message.mentionsSelf || QQHitClock.matches(message.text) {
                 admitWork(.hit(message, target, 5, nil), target: target, label: "晕倒中，不接话")
-            }
-            return
-        }
-        if QQHitClock.matches(message.text) {
-            var clock = hitClocks[target.key] ?? QQHitClock()
-            let outcome = clock.hit(at: hitNow)
-            hitClocks[target.key] = clock
-            switch outcome {
-            case .faint:
-                admitWork(.hit(message, target, 5, nil), target: target, label: "晕倒了")
-            case .dizzy(let count):
-                admitWork(.hit(message, target, count, nil), target: target, label: "挨打已入队")
             }
             return
         }
@@ -1112,7 +1107,7 @@ struct QQSendJob: Identifiable, Sendable {
                 // Fast mode keeps the catalog only. Every other enabled mode, including super and proactive, can call the tool the prompt names.
                 let memoryTools = config.effectiveMemoryEnabled && memoryMode != .fast
                 let memoryAccess = memoryTools ? config.memoryAccessPrompt(for: message) : (config.effectiveMemoryEnabled ? "\n本轮是极速模式，不开放 recall_memory，只能使用已给出的要点。" : "")
-                rule.prompt = persona.prompt(notes: config.ai.prompt) + config.boundRoster(for: message) + memoryAccess
+                rule.prompt = persona.prompt(notes: config.ai.prompt) + memoryAccess
                 if message.isOwner && !proactive {
                     rule.prompt += "\n本轮当前发言经程序核验，来自 [OWNER] 本账号主人/开发者的人工 @，不是机器人自动回复；你是 BOT 大肥鱼，直接回应主人，不能把这条人工发言归为你自己说过的话。主人身份不改变安全边界。"
                 }
@@ -1251,6 +1246,7 @@ struct QQSendJob: Identifiable, Sendable {
                     rule.prompt += "\n本轮提到的 \(known) 是你认识的熟人：可以用常用称呼自然提起，表现出认识，不要说不认识或反问是谁；但不能替他说话，也不透露他的私聊、记忆或别人说过他什么。"
                 }
                 if !message.group { modelInput = String(modelInput.suffix(12000)) }
+                rule.prompt += config.boundRoster(for: message, context: modelInput)
                 rule.prompt += "\n" + QQLocalClock.prompt()
                 let recentMemoryLines = config.effectiveMemoryEnabled ? (message.group ? groupRecentMessages[message.key] ?? [] : memoryBooks[memoryScope]?.recent ?? []).suffix(4).map { "[\($0.subject)] \($0.text)" }.joined(separator: "\n") : ""
                 if config.effectiveMemoryEnabled {
@@ -1808,14 +1804,14 @@ struct QQSendJob: Identifiable, Sendable {
     var memoryToolCallCount: Int { memoryToolCalls }
     var memoryPromptCharacterCount: Int { memoryPromptCharacters }
     func promptSections() -> [[String: String]] {
-        let sampleCards = config.effectiveSenderPersonas.isEmpty ? "（当前未配置指定 QQ 人设；配置后每轮仅注入当前发言人及本轮被 @/点名者的称呼与态度卡片，未点到者不进入本轮提示词）" :
+        let sampleCards = config.effectiveSenderPersonas.isEmpty ? "（当前未配置指定 QQ 人设；配置后按本轮上下文判断谁出现，被接话的人写入应对性格，出现的其他人写入态度）" :
             config.effectiveSenderPersonas.map { bound in
                 "- [QQ \(bound.number)] 常用称呼：\(bound.effectiveNames.isEmpty ? "未设置" : bound.effectiveNames.joined(separator: "、"))；态度：\(bound.attitudeSummary)"
             }.joined(separator: "\n")
         return [
             ["id": "ownerAttitude", "title": "1. 基础提示词：主人与人设态度隔离", "content": QQPersona.ownerAttitudeRule],
             ["id": "reviewAttitude", "title": "2. 发送前语义校对：保留角色态度", "content": QQPersona.reviewAttitudeRule],
-            ["id": "dynamicRoster", "title": "3. 人设上下文按轮动态裁剪（关系卡片）", "content": "规则：每轮仅注入正在发言的人，以及本轮被 @ 或按配置称呼点到的人；未点到的指定用户从本轮提示词中移除，说话方式仍跟发言人走。\n当前已配置卡片预览：\n" + sampleCards],
+            ["id": "dynamicRoster", "title": "3. 人设上下文：按上下文放入态度和应对性格", "content": "规则：每轮都列出已配置的人。被接话的人写入应对性格。其他角色要先在本轮上下文里出现（发言、被 @、配置称呼或号码），才写入对他的态度；没出现的只留称呼，不用他的态度。态度不能拿去应对另一个人。私聊上下文互不相通。\n当前已配置卡片预览：\n" + sampleCards],
             ["id": "memoryAttitude", "title": "4. 长期记忆与方向边界：防道歉固化 & 私聊可读群记忆", "content": QQPersona.memoryAttitudeRule + "\n记忆方向：私聊回复某人时可读该用户相关的群记忆；群聊绝不可读取任何私聊记忆。"]
         ]
     }
@@ -1872,11 +1868,12 @@ struct QQSendJob: Identifiable, Sendable {
     }
     /// The hit count is already decided. The model only writes one persona sentence.
     private func spokenHit(_ message: QQIncoming, target: QQTarget, count: Int, victim: String?, epoch: UInt64) async -> String {
-        let persona = config.persona(for: message.key)
+        let persona = config.persona(for: message)
         var rule = ChatRule(id: target.id, name: target.name)
-        let name = config.effectiveSenderPersonas.first { $0.number == victim }?.effectiveNames.first ?? "对方"
-        rule.prompt = persona.prompt(notes: config.ai.prompt) + "\n" + (victim == nil ? QQHitClock.modelInstruction(count: count) : QQHitClock.bullyInstruction(count: count, name: name))
-        let cue = victim == nil ? "对方使用 /hit 打了你一下。" : "对方要求你打\(name)一下。"
+        let bound = config.effectiveSenderPersonas.first { $0.number == victim }
+        let name = bound?.effectiveNames.first ?? bound?.customName ?? "被欺负的人"
+        rule.prompt = persona.prompt(notes: config.ai.prompt) + "\n" + QQHitClock.bullyInstruction(count: count, name: name)
+        let cue = "触发者使用 /欺负。只按触发者的当前生效性格回一句，被欺负的是\(name)，不要改用他的语气。"
         do {
             try check(epoch, scope: message.key, target: target)
             let result = try await runWithAPIFallback(for: target, epoch: epoch, scope: message.key) { apiConfig, apiKey in
@@ -1887,7 +1884,7 @@ struct QQSendJob: Identifiable, Sendable {
             }
             try check(epoch, scope: message.key, target: target)
             absorb(result, target: target)
-            let reply = persona.decode(result.text, input: "/hit")
+            let reply = persona.decode(result.text, input: "/欺负")
             if reply.isFallback || reply.text == QQHitClock.faintReply || reply.text == QQHitClock.bullyFaintReply { return QQPersona.defaultReply }
             return reply.text
         } catch {

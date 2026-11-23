@@ -3,6 +3,11 @@ import BotCore
 
 private typealias QQViewState<Value> = SwiftUI.State<Value>
 
+private func modelChoices(current: String, fetched: [String]) -> [String] {
+    if current.isEmpty || fetched.contains(current) { return fetched.isEmpty ? [current].filter { !$0.isEmpty } : fetched }
+    return [current] + fetched
+}
+
 struct QQView: View {
     @ObservedObject var engine: QQEngine
     @ObservedObject var wechat: BotEngine
@@ -415,31 +420,26 @@ struct QQView: View {
                     VStack(alignment: .leading, spacing: 20) {
                         HStack(spacing: 20) {
                             Picker("模型服务", selection: Binding(get: {
-                                let url = editor.replyDraft.value.ai.effectiveBaseURL
-                                if url == QQAPIProfile.officialBaseURL { return QQAPIPreset.deepseek }
-                                if url == QQAPIProfile.cialloBaseURL { return QQAPIPreset.ciallo }
-                                return QQAPIPreset.custom
+                                QQAPIPreset.detect(editor.replyDraft.value.ai.effectiveBaseURL)
                             }, set: { preset in
-                                switch preset {
-                                case .deepseek:
-                                    editor.replyDraft.value.ai.effectiveBaseURL = QQAPIProfile.officialBaseURL
-                                    if editor.replyDraft.value.ai.model == "deepseek-v4.1-flash" || editor.replyDraft.value.ai.model.isEmpty {
-                                        editor.replyDraft.value.ai.model = "deepseek-flash"
-                                    }
-                                case .ciallo:
-                                    editor.replyDraft.value.ai.effectiveBaseURL = QQAPIProfile.cialloBaseURL
-                                    if editor.replyDraft.value.ai.model == "deepseek-flash" || editor.replyDraft.value.ai.model.isEmpty {
-                                        editor.replyDraft.value.ai.model = "deepseek-v4.1-flash"
-                                    }
-                                case .custom:
-                                    if editor.replyDraft.value.ai.isOfficialAPI {
-                                        editor.replyDraft.value.ai.baseURL = "https://"
-                                    }
+                                editor.replyDraft.value.ai.effectiveBaseURL = preset.defaultBaseURL
+                                let stale = ["deepseek-flash", "deepseek-v4.1-flash", "kimi-latest", "glm-4-flash"]
+                                if !preset.defaultModel.isEmpty, editor.replyDraft.value.ai.model.isEmpty || stale.contains(editor.replyDraft.value.ai.model) {
+                                    editor.replyDraft.value.ai.model = preset.defaultModel
+                                } else if preset == .ciallo, stale.contains(editor.replyDraft.value.ai.model) {
+                                    editor.replyDraft.value.ai.model = ""
                                 }
                             })) {
-                                ForEach(QQAPIPreset.allCases, id: \.self) { preset in Text(preset.title).tag(preset) }
+                                ForEach(QQAPIPreset.allCases.filter { $0 != .custom }, id: \.self) { preset in Text(preset.title).tag(preset) }
                             }
-                            LabeledContent("模型") { TextField("模型", text: $editor.replyDraft.value.ai.model) }.labeledContentStyle(PanelLabeledContentStyle())
+                            Picker("模型", selection: $editor.replyDraft.value.ai.model) {
+                                ForEach(modelChoices(current: editor.replyDraft.value.ai.model, fetched: engine.availableModels), id: \.self) { model in Text(model).tag(model) }
+                            }
+                            Button("获取模型") {
+                                let baseURL = editor.replyDraft.value.ai.effectiveBaseURL
+                                let key = editor.relayKey
+                                Task { do { _ = try await engine.refreshModels(baseURL: baseURL, key: key) } catch { engine.error = error.localizedDescription } }
+                            }
                             Button("复制微信 AI 参数") {
                                 var ai = wechat.config; ai.chats = []
                                 ai.prompt = editor.replyDraft.value.ai.prompt; editor.replyDraft.value.ai = ai
@@ -448,11 +448,8 @@ struct QQView: View {
                                 editor.replyDraft.value.perChatDaily = String(ai.effectiveSendLimits.perChatDaily)
                             }
                         }
-                        if !editor.replyDraft.value.ai.isOfficialAPI {
-                            HStack(spacing: 20) {
-                                LabeledContent("中转站地址") { TextField("https://sub.ciallo.cafe/v1", text: Binding(get: { editor.replyDraft.value.ai.effectiveBaseURL }, set: { editor.replyDraft.value.ai.effectiveBaseURL = $0 })) }.labeledContentStyle(PanelLabeledContentStyle())
-                                LabeledContent("中转站 Key") { SecureField("单独填写中转站密钥（留空保留）", text: $editor.relayKey) }.labeledContentStyle(PanelLabeledContentStyle())
-                            }
+                        if let preset = [QQAPIPreset.kimi, .glm, .ciallo].first(where: { $0.defaultBaseURL == editor.replyDraft.value.ai.effectiveBaseURL }) {
+                            LabeledContent(preset.keyTitle) { SecureField("留空保留已保存的密钥", text: $editor.relayKey) }.labeledContentStyle(PanelLabeledContentStyle())
                         }
                         HStack(spacing: 24) {
                             Toggle("识别图片与表情包", isOn: $editor.replyDraft.value.visionEnabled)

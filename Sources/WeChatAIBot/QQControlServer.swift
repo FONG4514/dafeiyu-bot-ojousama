@@ -228,6 +228,8 @@ import BotCore
                     try engine.deleteMemoryCategory(scope: scope, name: name)
                 case "reclassifyMemory":
                     engine.requestReclassify()
+                case "listModels":
+                    _ = try await engine.refreshModels(baseURL: request.baseURL ?? engine.config.ai.effectiveBaseURL, key: request.key ?? "")
                 case "save":
                     guard !engine.running, !engine.busy, !engine.runtimeBusy else { throw AppFailure.message("请先暂停") }
                     var updated = engine.config
@@ -307,7 +309,8 @@ import BotCore
                 "calls": engine.usage.calls, "attempts": engine.sends.attempts, "confirmed": engine.sends.confirmed,
                 "groupMessageCounts": engine.groupMessageCounts,
                 "queued": engine.queuedCount, "sendQueued": engine.sendQueuedCount, "queueCapacity": QQEngine.queueCapacity,
-                "apiCredentials": ["official": engine.hasAPIKey(for: QQAPIProfile.officialBaseURL), "current": engine.hasAPIKey(for: engine.config.ai.effectiveBaseURL), "ciallo": engine.hasAPIKey(for: QQAPIProfile.cialloBaseURL)],
+                "apiCredentials": ["official": engine.hasAPIKey(for: QQAPIProfile.officialBaseURL), "current": engine.hasAPIKey(for: engine.config.ai.effectiveBaseURL), "kimi": engine.hasAPIKey(for: QQAPIProfile.kimiBaseURL), "glm": engine.hasAPIKey(for: QQAPIProfile.glmBaseURL), "ciallo": engine.hasAPIKey(for: QQAPIProfile.cialloBaseURL)],
+                "models": engine.availableModels,
                 "uncertain": engine.sends.uncertain, "rejected": engine.rejectedScopedEvents,
                 "contacts": engine.contacts.map { ["key": $0.id, "name": $0.name, "number": $0.number, "group": $0.group] as [String: Any] }]
             reply(connection, id: id, code: 200, data: try JSONSerialization.data(withJSONObject: object))

@@ -50,7 +50,7 @@ public struct QQSenderPersona: Codable, Equatable, Identifiable, Sendable {
     public var names: [String]?
     /// Optional short attitude note for relationship cards; speaking style still follows the current speaker.
     public var attitude: String?
-    /// Easter egg. Only an explicit true lets `/hit` aim at this user. Missing values stay off.
+    /// Easter egg. Only an explicit true lets `/欺负` aim at this user. Missing values stay off.
     public var bully: Bool?
     public var bullies: Bool { bully == true }
     public var effectiveNames: [String] { get { names ?? [] } set { names = newValue } }
@@ -68,7 +68,7 @@ public struct QQSenderPersona: Codable, Equatable, Identifiable, Sendable {
     public func isMentioned(in message: QQIncoming) -> Bool {
         message.sender != number && (message.mentionedUsers.contains(number) || effectiveNames.contains { message.text.localizedCaseInsensitiveContains($0) })
     }
-    /// A marked user named by this `/hit`, either with a real @ or the text after the command.
+    /// A marked user named by this `/欺负`, either with a real @ or the text after the command.
     public func isHitTarget(in message: QQIncoming, phrase: String) -> Bool {
         guard bullies else { return false }
         if message.mentionedUsers.contains(number) { return true }
@@ -150,9 +150,23 @@ public struct QQConfig: Codable, Equatable, Sendable {
     public func senderPersona(for message: QQIncoming) -> QQSenderPersona? {
         effectiveSenderPersonas.first { $0.number == message.sender }
     }
-    /// The first marked user this `/hit` actually names. Unmarked people are not targets.
+    /// The first marked user this `/欺负` actually names. Unmarked people are not targets.
     public func bullyTarget(_ message: QQIncoming, phrase: String) -> QQSenderPersona? {
         effectiveSenderPersonas.first { $0.isHitTarget(in: message, phrase: phrase) }
+    }
+    /// Who this `/欺负` bullies. A private `/欺负` with no other name aims at that peer, and only when 欺负他 is on.
+    public func hitVictim(in message: QQIncoming) -> QQSenderPersona? {
+        guard let phrase = QQHitClock.rest(message.text) else { return nil }
+        if let named = bullyTarget(message, phrase: phrase) { return named }
+        guard !message.group, phrase.isEmpty || phrase == "打一下", let peer = senderPersona(for: message), peer.bullies else { return nil }
+        return peer
+    }
+    /// True when the command points at a person, including a configured private peer. An unmarked person must not fall through to the bot fainting.
+    public func hitNamesSomeone(_ message: QQIncoming) -> Bool {
+        guard let phrase = QQHitClock.rest(message.text) else { return false }
+        if !phrase.isEmpty && phrase != "打一下" { return true }
+        if message.mentionedUsers.contains(where: { $0 != "all" && $0 != expectedSelfID && Self.validID($0) }) { return true }
+        return !message.group && (phrase.isEmpty || phrase == "打一下") && senderPersona(for: message) != nil
     }
     public func persona(for message: QQIncoming) -> QQPersona {
         guard let bound = senderPersona(for: message) else { return persona(for: message.key) }
@@ -183,30 +197,63 @@ public struct QQConfig: Codable, Equatable, Sendable {
     public func mentionedPersonas(in message: QQIncoming) -> [QQSenderPersona] {
         effectiveSenderPersonas.filter { $0.isMentioned(in: message) }
     }
-    public func boundRoster(for message: QQIncoming) -> String {
-        boundRoster(chat: message.key, current: message.sender, mentioned: Set(mentionedPersonas(in: message).map(\.id)))
+    public func boundRoster(for message: QQIncoming, context: String = "") -> String {
+        let extra = [message.text, context].filter { !$0.isEmpty }.joined(separator: "\n")
+        return boundRoster(chat: message.key, current: message.sender, mentioned: Set(mentionedPersonas(in: message).map(\.id)), context: extra)
     }
-    /// Dynamic per-turn relationship cards: only the current speaker and bound users mentioned in this turn.
-    /// Unmentioned bound users are omitted so their attitudes do not bleed into the current reply.
-    public func boundRoster(chat key: String, current: String? = nil, mentioned: Set<UUID> = []) -> String {
+    /// Names stay visible. The addressee gets a response style; another person's attitude is included only after this turn's context shows they appeared.
+    public func boundRoster(chat key: String, current: String? = nil, mentioned: Set<UUID> = [], context: String = "") -> String {
         guard !effectiveSenderPersonas.isEmpty else { return "" }
-        let active = effectiveSenderPersonas.enumerated().filter { _, bound in
-            bound.number == current || mentioned.contains(bound.id) ||
-                (current == nil && mentioned.isEmpty && (key == "persona:" + bound.id.uuidString || key == "private:" + bound.number))
-        }
-        guard !active.isEmpty else { return "" }
-        let lines = active.map { index, bound -> String in
+        let inBoundPrivate = !key.hasPrefix("group:") && effectiveSenderPersonas.contains { key == "private:" + $0.number || key == "persona:" + $0.id.uuidString || $0.number == current }
+        guard key.hasPrefix("group:") || inBoundPrivate || !mentioned.isEmpty else { return "" }
+        let speaker = effectiveSenderPersonas.first { $0.number == current }
+            ?? effectiveSenderPersonas.first { key == "private:" + $0.number || key == "persona:" + $0.id.uuidString }
+        let response = speaker.map { persona(bound: $0) } ?? persona(for: key)
+        let style = response.effectiveStyle
+        var styleTitle = style.name
+        let customTitle = (response.customName ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+        if style == .custom && !customTitle.isEmpty { styleTitle += "「\(customTitle)」" }
+        styleTitle += "（\(style.description)）"
+        let lines = effectiveSenderPersonas.enumerated().map { index, bound -> String in
             let label: String
             if key == "persona:" + bound.id.uuidString || key == "private:" + bound.number || (!key.hasPrefix("group:") && bound.number == current) { label = "PEER" }
             else if key.hasPrefix("group:") { label = QQMemoryBook.subject(account: expectedSelfID, target: key, sender: bound.number) }
             else { label = bound.effectiveNames.first ?? bound.customName ?? "指定用户\(index + 1)" }
             var line = "- [\(label)]" + (bound.effectiveNames.isEmpty ? "" : " 常用称呼：" + bound.effectiveNames.joined(separator: "、"))
-            line += "；态度：" + bound.attitudeSummary
-            if bound.number == current { line += "（就是当前发言者）" } else if mentioned.contains(bound.id) { line += "（本轮被提到）" }
+            let isAddressee = bound.number == current || (current == nil && (key == "private:" + bound.number || key == "persona:" + bound.id.uuidString))
+            if isAddressee {
+                line += "；应对性格：" + styleTitle + "；态度：" + bound.attitudeSummary
+                line += "（就是当前发言者）。本轮只用这个应对性格回他。"
+            } else if mentioned.contains(bound.id) || personaAppears(bound, chat: key, context: context) {
+                line += "；态度：" + bound.attitudeSummary
+                line += "（出现在本轮上下文，只在说到这个人时使用这条态度）"
+            } else {
+                line += "（认识这个人；本轮上下文没出现他，不使用他的态度、口吻或私聊内容）"
+            }
             return line
         }
-        return "\n[关系卡片] 本轮仅注入当前发言者与本轮被点名者的称呼和态度（未点到的指定用户已从本轮提示词移除）：\n" + lines.joined(separator: "\n") +
-            "\n卡片只规定对该人的称呼和态度；本轮说话方式仍跟当前发言人的人设走，不整段换成被提到者的人设。面对当前发言人时，不透露其他人的私聊或记忆，也不把对某人的态度或单轮道歉扩散到主人或其他人身上。"
+        return "\n[关系卡片] 被接话的人只使用应对性格：\(styleTitle)。先根据本轮上下文判断其他人有没有出现（本人发言、被 @、配置称呼或号码都算出现）。出现的其他角色写入态度；态度只在说到这个人时使用，不整段换成被提到者的人设，也不沿用他的口吻或私聊。没出现的人只保留称呼。每个人的私聊上下文互不相通。\n" + lines.joined(separator: "\n")
+    }
+    private func personaAppears(_ bound: QQSenderPersona, chat key: String, context: String) -> Bool {
+        guard !context.isEmpty else { return false }
+        if key.hasPrefix("group:") {
+            let label = QQMemoryBook.subject(account: expectedSelfID, target: key, sender: bound.number)
+            if context.contains(label) { return true }
+        }
+        let custom = (bound.customName ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+        let aliases = bound.effectiveNames + (custom.count >= 2 ? [custom] : [])
+        if aliases.contains(where: { context.localizedCaseInsensitiveContains($0) }) { return true }
+        return Self.containsIdentifier(bound.number, in: context)
+    }
+    private static func containsIdentifier(_ identifier: String, in text: String) -> Bool {
+        var rest = text[...]
+        while let range = rest.range(of: identifier) {
+            let before = range.lowerBound == rest.startIndex || !rest[rest.index(before: range.lowerBound)].isNumber
+            let after = range.upperBound == rest.endIndex || !rest[range.upperBound].isNumber
+            if before && after { return true }
+            rest = rest[range.upperBound...]
+        }
+        return false
     }
     /// Anonymous labels only for memory compaction, without names or attitude descriptions.
     public func memoryAnonymousRoster(chat key: String) -> String {

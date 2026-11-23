@@ -952,8 +952,16 @@ private final class DelayedModelProtocol: URLProtocol, @unchecked Sendable {
         // 2) Official vs Ciallo relay model routing & endpoint URL validation.
         let officialRoute = DeepSeekClient.effectiveModel(configured: "deepseek-flash", hasImages: true, baseURL: QQAPIProfile.officialBaseURL)
         #expect(officialRoute.model == "deepseek-flash" && officialRoute.supportsVision)
-        let cialloRoute = DeepSeekClient.effectiveModel(configured: "deepseek-v4.1-flash", hasImages: true, baseURL: QQAPIProfile.cialloBaseURL)
-        #expect(cialloRoute.model == "deepseek-v4.1-flash" && cialloRoute.supportsVision)
+        let cialloRoute = DeepSeekClient.effectiveModel(configured: "claude-sonnet-5", hasImages: true, baseURL: QQAPIProfile.cialloBaseURL)
+        #expect(cialloRoute.model == "claude-sonnet-5" && cialloRoute.supportsVision)
+        #expect(DeepSeekClient.effectiveModel(configured: "glm-4-flash", hasImages: true, baseURL: QQAPIProfile.glmBaseURL).model == "glm-4-flash")
+        #expect(DeepSeekClient.effectiveModel(configured: "kimi-latest", hasImages: false, baseURL: QQAPIProfile.kimiBaseURL).model == "kimi-latest")
+        #expect(DeepSeekClient.usesDeepSeekThinking(baseURL: QQAPIProfile.officialBaseURL, model: "deepseek-flash"))
+        #expect(!DeepSeekClient.usesDeepSeekThinking(baseURL: QQAPIProfile.kimiBaseURL, model: "kimi-latest"))
+        #expect(!DeepSeekClient.usesDeepSeekThinking(baseURL: QQAPIProfile.glmBaseURL, model: "glm-4-flash"))
+        #expect(!DeepSeekClient.usesDeepSeekThinking(baseURL: QQAPIProfile.cialloBaseURL, model: "claude-sonnet-5"))
+        #expect(QQAPIPreset.detect(QQAPIProfile.kimiBaseURL) == .kimi)
+        #expect(QQAPIPreset.detect(QQAPIProfile.glmBaseURL) == .glm)
         let cialloURL = try DeepSeekClient.endpointURL(baseURL: QQAPIProfile.cialloBaseURL, path: "chat/completions")
         #expect(cialloURL.absoluteString == "https://sub.ciallo.cafe/v1/chat/completions")
 

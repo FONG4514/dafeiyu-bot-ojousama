@@ -161,36 +161,65 @@ function shouldSync(group) {
   if(syncedForms.get(group)===snapshot) return false;
   syncedForms.set(group,snapshot); return true;
 }
+const apiPresets={
+  deepseek:['https://api.deepseek.com','deepseek-flash','DeepSeek API Key'],
+  kimi:['https://api.moonshot.cn/v1','kimi-latest','Kimi 官方 API Key'],
+  glm:['https://open.bigmodel.cn/api/paas/v4','glm-4-flash','智谱 GLM 官方 API Key'],
+  ciallo:['https://sub.ciallo.cafe/v1','','Ciallo 中转站 Key']
+};
 function detectAPIProvider(baseURL) {
   const url=(baseURL||'https://api.deepseek.com').replace(/\/+$/,'');
-  if(url==='https://api.deepseek.com') return 'deepseek';
-  if(url==='https://sub.ciallo.cafe/v1') return 'ciallo';
-  return 'custom';
+  return Object.entries(apiPresets).find(([,preset])=>preset[0]&&preset[0]===url)?.[0]||'deepseek';
+}
+function fillModels(ids, selected) {
+  const select=$('model'); if(!select) return;
+  const current=selected??select.value;
+  const values=[...new Set([current,...(ids||[])].filter(Boolean))];
+  select.replaceChildren(...(values.length?values:['']).map(id=>{const option=document.createElement('option'); option.value=id; option.textContent=id||'先获取模型'; return option;}));
+  if(current) select.value=current;
 }
 function renderAPIProviderFields() {
   if(!$('apiProvider')) return;
   const provider=$('apiProvider').value;
   $('relayConfigFields').hidden=provider==='deepseek';
+  if($('apiBaseURL')) $('apiBaseURL').parentElement.hidden=true;
+  const label=document.querySelector('label[for="relayKey"]');
+  if(label) label.textContent=apiPresets[provider]?.[2]||'API Key';
+}
+function applyAPIProvider(provider, model) {
+  const preset=apiPresets[provider]; if(!preset) return;
+  $('apiBaseURL').value=preset[0];
+  const stale=['deepseek-flash','deepseek-v4.1-flash','kimi-latest','glm-4-flash'];
+  if(preset[1] && (!model || stale.includes(model))) $('model').value=preset[1];
+  else if(provider==='ciallo' && stale.includes(model)) $('model').value='';
+  fillModels(state?.models||[], $('model').value);
 }
 if($('apiProvider')) {
   $('apiProvider').addEventListener('change',()=>{
-    const provider=$('apiProvider').value;
-    if(provider==='deepseek') {
-      $('apiBaseURL').value='https://api.deepseek.com';
-      if(!$('model').value.trim()||$('model').value.trim()==='deepseek-v4.1-flash') $('model').value='deepseek-flash';
-    } else if(provider==='ciallo') {
-      $('apiBaseURL').value='https://sub.ciallo.cafe/v1';
-      if(!$('model').value.trim()||$('model').value.trim()==='deepseek-flash') $('model').value='deepseek-v4.1-flash';
-    }
+    applyAPIProvider($('apiProvider').value, $('model').value);
     renderAPIProviderFields();
+  });
+}
+if($('refreshModels')) {
+  $('refreshModels').addEventListener('click',async()=>{
+    const provider=$('apiProvider').value;
+    const baseURL=apiPresets[provider][0];
+    text('modelStatus','正在获取模型…');
+    try {
+      const result=await act({action:'listModels',baseURL,key:provider==='deepseek'?'':$('relayKey').value});
+      fillModels(result.models||[], $('model').value||result.models?.[0]||'');
+      if(!$('model').value && result.models?.length) $('model').value=result.models[0];
+      text('modelStatus', result.error || (result.models?.length?`已获取 ${result.models.length} 个模型`:'该服务没有返回模型'));
+    } catch(e) { text('modelStatus', e.message); }
   });
 }
 if($('fallbackProvider')) {
   $('fallbackProvider').addEventListener('change',()=>{
     const provider=$('fallbackProvider').value;
-    if(provider==='') { $('fallbackBaseURL').value=''; $('fallbackModel').value=''; }
-    else if(provider==='deepseek') { $('fallbackBaseURL').value='https://api.deepseek.com'; $('fallbackModel').value='deepseek-flash'; }
-    else if(provider==='ciallo') { $('fallbackBaseURL').value='https://sub.ciallo.cafe/v1'; $('fallbackModel').value='deepseek-v4.1-flash'; }
+    if(provider==='') { $('fallbackBaseURL').value=''; $('fallbackModel').value=''; return; }
+    const preset=apiPresets[provider]; if(!preset) return;
+    $('fallbackBaseURL').value=preset[0];
+    if(preset[1]) $('fallbackModel').value=preset[1];
   });
 }
 function syncForms() {
@@ -214,7 +243,8 @@ function syncForms() {
     if($('fallbackModel')) $('fallbackModel').value=ai.fallbackModel??'';
     if($('fallbackProvider')) $('fallbackProvider').value=ai.fallbackBaseURL ? detectAPIProvider(ai.fallbackBaseURL) : '';
     renderAPIProviderFields();
-    for(const [id,value] of Object.entries({model:ai.model,prompt:ai.prompt,daily:ai.dailyLimit,cooldown:ai.cooldownSeconds,sendDaily:ai.sendLimits?.daily??100,chatDaily:ai.sendLimits?.perChatDaily??30,globalInterval:ai.sendLimits?.globalIntervalSeconds??3,workStart:ai.workStart,workEnd:ai.workEnd,groupParticipationEvery:state.config.groupParticipationEvery??10,groupParticipationWillingness:state.config.groupParticipationWillingness??5,personaStyle:persona.style??'teasing',maxCharacters:persona.maxCharacters,banter:persona.banter,stickerIntervalSeconds:persona.stickerIntervalSeconds,stickerEveryReplies:persona.stickerEveryReplies??3,memoryMessages:memory.messageThreshold,memoryCharacters:memory.characterThreshold,memoryMinutes:memory.intervalMinutes,memoryBudget:memory.retrievalCharacters,memoryLimit:memory.storeLimitMB??2048,memoryCompress:memory.compressEvery??12,memorySuper:memory.superDailyLearns??200,thinkingEffort:ai.thinkingEffort??'high',priceHit:ai.inputHitPrice??'',priceMiss:ai.inputMissPrice??'',priceOutput:ai.outputPrice??'',dailySpend:ai.dailySpendLimit??'',weeklySpend:ai.weeklySpendLimit??''})) $(id).value=value;
+    for(const [id,value] of Object.entries({prompt:ai.prompt,daily:ai.dailyLimit,cooldown:ai.cooldownSeconds,sendDaily:ai.sendLimits?.daily??100,chatDaily:ai.sendLimits?.perChatDaily??30,globalInterval:ai.sendLimits?.globalIntervalSeconds??3,workStart:ai.workStart,workEnd:ai.workEnd,groupParticipationEvery:state.config.groupParticipationEvery??10,groupParticipationWillingness:state.config.groupParticipationWillingness??5,personaStyle:persona.style??'teasing',maxCharacters:persona.maxCharacters,banter:persona.banter,stickerIntervalSeconds:persona.stickerIntervalSeconds,stickerEveryReplies:persona.stickerEveryReplies??3,memoryMessages:memory.messageThreshold,memoryCharacters:memory.characterThreshold,memoryMinutes:memory.intervalMinutes,memoryBudget:memory.retrievalCharacters,memoryLimit:memory.storeLimitMB??2048,memoryCompress:memory.compressEvery??12,memorySuper:memory.superDailyLearns??200,thinkingEffort:ai.thinkingEffort??'high',priceHit:ai.inputHitPrice??'',priceMiss:ai.inputMissPrice??'',priceOutput:ai.outputPrice??'',dailySpend:ai.dailySpendLimit??'',weeklySpend:ai.weeklySpendLimit??''})) $(id).value=value;
+    fillModels(state.models||[], ai.model);
     $('debugLogging').checked=ai.debugLogging??false; $('reasoningOutput').checked=ai.reasoningOutput??false;
     for(const id of ['onlineEnabled','visionEnabled','memoryEnabled','groupParticipationEnabled']) $(id).checked=state.config[id]??false;
     $('workHoursEnabled').checked=ai.workHoursEnabled; $('stickersEnabled').checked=persona.stickersEnabled;
@@ -254,7 +284,7 @@ function senderPersonaRow(item={}) {
   const attitude=document.createElement('input');attitude.className='sender-attitude';attitude.maxLength=120;attitude.autocomplete='off';attitude.placeholder='可选：关系卡片态度简述（提及该用户时注入，留空按上方性格自动生成）';attitude.setAttribute('aria-label','对该用户的态度简述');attitude.value=item.attitude??'';
   const bullyLabel=document.createElement('label');bullyLabel.className='sender-bully';
   const bully=document.createElement('input');bully.type='checkbox';bully.className='sender-bully-input';bully.checked=!!item.bully;
-  bullyLabel.append(bully,document.createTextNode('欺负他'));
+  bullyLabel.append(bully,document.createTextNode('欺负他（才响应 /欺负）'));
   row.append(number,style,remove,names,attitude,bullyLabel,name,prompt);
   return row;
 }
@@ -298,17 +328,18 @@ function senderRuleDrafts() {
 function apiProfileRow(item={}) {
   const row=document.createElement('div');row.className='api-profile';row.dataset.id=item.id??crypto.randomUUID();
   const preset=document.createElement('select');preset.className='api-preset';
-  for(const [val,label] of [['deepseek','DeepSeek 官方'],['ciallo','Ciallo 中转站'],['custom','自定义中转站']]){const opt=document.createElement('option');opt.value=val;opt.textContent=label;preset.append(opt);}
+  for(const [val,label] of [['deepseek','DeepSeek 官方'],['kimi','Kimi 官方'],['glm','智谱 GLM 官方'],['ciallo','Ciallo 中转站']]){const opt=document.createElement('option');opt.value=val;opt.textContent=label;preset.append(opt);}
   preset.value=detectAPIProvider(item.baseURL);
   const name=document.createElement('input');name.className='api-name';name.maxLength=60;name.placeholder='配置名称（例如：Ciallo 备用）';name.value=item.name??(preset.value==='ciallo'?'Ciallo 中转站':'DeepSeek 官方');
   const baseURL=document.createElement('input');baseURL.className='api-base';baseURL.placeholder='https://sub.ciallo.cafe/v1';baseURL.value=item.baseURL??(preset.value==='ciallo'?'https://sub.ciallo.cafe/v1':'https://api.deepseek.com');
-  const model=document.createElement('input');model.className='api-model';model.placeholder='deepseek-v4.1-flash';model.value=item.model??(preset.value==='ciallo'?'deepseek-v4.1-flash':'deepseek-flash');
+  const model=document.createElement('input');model.className='api-model';model.placeholder='先获取或填写该服务的模型';model.value=item.model??(apiPresets[preset.value]?.[1]||'');
   const key=document.createElement('input');key.type='password';key.className='api-key';key.autocomplete='off';key.placeholder='该 API 的密钥（留空保留）';
   const remove=document.createElement('button');remove.type='button';remove.textContent='删除';
   remove.addEventListener('click',()=>{const list=$('apiProfiles');row.remove();list.dispatchEvent(new Event('input',{bubbles:true}));});
   preset.addEventListener('change',()=>{
-    if(preset.value==='deepseek'){baseURL.value='https://api.deepseek.com';model.value='deepseek-flash';if(!name.value||name.value==='Ciallo 中转站')name.value='DeepSeek 官方';}
-    else if(preset.value==='ciallo'){baseURL.value='https://sub.ciallo.cafe/v1';model.value='deepseek-v4.1-flash';if(!name.value||name.value==='DeepSeek 官方')name.value='Ciallo 中转站';}
+    const chosen=apiPresets[preset.value]; if(!chosen) return;
+    baseURL.value=chosen[0]; if(chosen[1]) model.value=chosen[1];
+    if(!name.value) name.value=preset.selectedOptions[0].textContent;
   });
   row.append(preset,name,baseURL,model,key,remove);
   return row;
