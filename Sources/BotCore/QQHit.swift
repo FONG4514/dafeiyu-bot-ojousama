@@ -45,17 +45,11 @@ public struct QQHitClock: Equatable, Sendable {
         return rest.isEmpty || rest == "打一下"
     }
     public static let bullyFaintReply = "[打晕惹]"
-    /// The bot is hitting a marked person. The count still belongs to the program.
-    public static func bullyInstruction(count: Int, name: String) -> String {
-        let step = min(4, max(1, count))
-        let degree = ["刚挨到，还站得住。", "比上一句更晕，开始晃。", "站不稳，眼前发花。", "快倒下，但这一下还没晕。"][step - 1]
-        return "程序已经点清：这是三分钟窗口内欺负 \(name) 的第 \(step) 下。你在欺负\(name)，不是自己挨打。次数和时间都由程序统计，你不能改次数，也不能判断要不要把对方打晕。第 5 下和随后一分钟由程序自己回复，这一下不要写打晕。这句话只使用触发这条命令的人的当前生效性格，不要改用被欺负的人的性格、态度或口吻。只写一句短话：\(degree)"
-    }
 
     /// The model only writes the sentence. It must not recount hits or decide the faint.
     public static func modelInstruction(count: Int) -> String {
         let step = min(4, max(1, count))
         let degree = ["刚被打到，还站得住，只带一点晕。", "比上一句更晕，开始晃。", "站不稳，眼前发花。", "快倒下，但这一下还没晕倒。"][step - 1]
-        return "程序已经点清：这是三分钟窗口内的第 \(step) 下。你自己挨打，不是在打别人。次数和时间都由程序统计，你不能改次数，也不能判断要不要晕倒。第 5 下和随后一分钟由程序自己回复，这一下不要写晕倒。只用被接话的人的应对性格写一句短话，不要改用其他人的态度：\(degree)"
+        return "程序已经点清：这是三分钟窗口内的第 \(step) 下。发令的人在欺负你，你自己挨打，不是在打别人。次数和时间都由程序统计，你不能改次数，也不能判断要不要晕倒。第 5 下和随后一分钟由程序自己回复，这一下不要写晕倒。只用当前生效性格回一句，这就是对这个发令的人该用的回话性格，不要改用别人的性格或态度：\(degree)"
     }
 }

@@ -835,21 +835,20 @@ struct QQSendJob: Identifiable, Sendable {
         }
         let hitNow = Date()
         if QQHitClock.rest(message.text) != nil {
-            guard let victim = config.hitVictim(in: message) else {
+            guard config.bullySender(in: message) != nil else {
                 record(target.id, .skipped, "没有勾选欺负他，不触发"); return
             }
-            let key = target.key + ":bully:" + victim.number
-            if hitClocks[key]?.isFainted(at: hitNow) == true {
-                admitWork(.hit(message, target, 5, victim.number), target: target, label: "还晕着，再打也是晕")
+            if hitClocks[target.key]?.isFainted(at: hitNow) == true {
+                admitWork(.hit(message, target, 5, nil), target: target, label: "晕倒中，不接话")
             } else {
-                var clock = hitClocks[key] ?? QQHitClock()
+                var clock = hitClocks[target.key] ?? QQHitClock()
                 let outcome = clock.hit(at: hitNow)
-                hitClocks[key] = clock
+                hitClocks[target.key] = clock
                 switch outcome {
                 case .faint:
-                    admitWork(.hit(message, target, 5, victim.number), target: target, label: "打晕了")
+                    admitWork(.hit(message, target, 5, nil), target: target, label: "晕倒了")
                 case .dizzy(let count):
-                    admitWork(.hit(message, target, count, victim.number), target: target, label: "欺负已入队")
+                    admitWork(.hit(message, target, count, nil), target: target, label: "挨打已入队")
                 }
             }
             return
@@ -1851,7 +1850,7 @@ struct QQSendJob: Identifiable, Sendable {
         if count >= 5 {
             text = victim == nil ? QQHitClock.faintReply : QQHitClock.bullyFaintReply
         } else {
-            text = await spokenHit(message, target: target, count: count, victim: victim, epoch: epoch)
+            text = await spokenHit(message, target: target, count: count, epoch: epoch)
         }
         let job = QQSendJob(
             account: config.expectedSelfID, target: target, direction: .outgoing, trigger: message,
@@ -1867,13 +1866,11 @@ struct QQSendJob: Identifiable, Sendable {
         }
     }
     /// The hit count is already decided. The model only writes one persona sentence.
-    private func spokenHit(_ message: QQIncoming, target: QQTarget, count: Int, victim: String?, epoch: UInt64) async -> String {
+    private func spokenHit(_ message: QQIncoming, target: QQTarget, count: Int, epoch: UInt64) async -> String {
         let persona = config.persona(for: message)
         var rule = ChatRule(id: target.id, name: target.name)
-        let bound = config.effectiveSenderPersonas.first { $0.number == victim }
-        let name = bound?.effectiveNames.first ?? bound?.customName ?? "被欺负的人"
-        rule.prompt = persona.prompt(notes: config.ai.prompt) + "\n" + QQHitClock.bullyInstruction(count: count, name: name)
-        let cue = "触发者使用 /欺负。只按触发者的当前生效性格回一句，被欺负的是\(name)，不要改用他的语气。"
+        rule.prompt = persona.prompt(notes: config.ai.prompt) + "\n" + QQHitClock.modelInstruction(count: count)
+        let cue = "发令的人使用 /欺负 打了你一下。只按对这个发令的人的回话性格回一句。"
         do {
             try check(epoch, scope: message.key, target: target)
             let result = try await runWithAPIFallback(for: target, epoch: epoch, scope: message.key) { apiConfig, apiKey in

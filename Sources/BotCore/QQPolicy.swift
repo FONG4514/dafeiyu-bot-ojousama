@@ -50,7 +50,7 @@ public struct QQSenderPersona: Codable, Equatable, Identifiable, Sendable {
     public var names: [String]?
     /// Optional short attitude note for relationship cards; speaking style still follows the current speaker.
     public var attitude: String?
-    /// Easter egg. Only an explicit true lets `/欺负` aim at this user. Missing values stay off.
+    /// Easter egg. Only an explicit true lets this person bully the bot with `/欺负`. Missing values stay off.
     public var bully: Bool?
     public var bullies: Bool { bully == true }
     public var effectiveNames: [String] { get { names ?? [] } set { names = newValue } }
@@ -67,14 +67,6 @@ public struct QQSenderPersona: Codable, Equatable, Identifiable, Sendable {
     }
     public func isMentioned(in message: QQIncoming) -> Bool {
         message.sender != number && (message.mentionedUsers.contains(number) || effectiveNames.contains { message.text.localizedCaseInsensitiveContains($0) })
-    }
-    /// A marked user named by this `/欺负`, either with a real @ or the text after the command.
-    public func isHitTarget(in message: QQIncoming, phrase: String) -> Bool {
-        guard bullies else { return false }
-        if message.mentionedUsers.contains(number) { return true }
-        let name = phrase.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !name.isEmpty, name != "打一下" else { return false }
-        return number == name || effectiveNames.contains { $0.compare(name, options: [.caseInsensitive, .diacriticInsensitive]) == .orderedSame }
     }
 }
 public struct QQConfig: Codable, Equatable, Sendable {
@@ -150,23 +142,10 @@ public struct QQConfig: Codable, Equatable, Sendable {
     public func senderPersona(for message: QQIncoming) -> QQSenderPersona? {
         effectiveSenderPersonas.first { $0.number == message.sender }
     }
-    /// The first marked user this `/欺负` actually names. Unmarked people are not targets.
-    public func bullyTarget(_ message: QQIncoming, phrase: String) -> QQSenderPersona? {
-        effectiveSenderPersonas.first { $0.isHitTarget(in: message, phrase: phrase) }
-    }
-    /// Who this `/欺负` bullies. A private `/欺负` with no other name aims at that peer, and only when 欺负他 is on.
-    public func hitVictim(in message: QQIncoming) -> QQSenderPersona? {
-        guard let phrase = QQHitClock.rest(message.text) else { return nil }
-        if let named = bullyTarget(message, phrase: phrase) { return named }
-        guard !message.group, phrase.isEmpty || phrase == "打一下", let peer = senderPersona(for: message), peer.bullies else { return nil }
-        return peer
-    }
-    /// True when the command points at a person, including a configured private peer. An unmarked person must not fall through to the bot fainting.
-    public func hitNamesSomeone(_ message: QQIncoming) -> Bool {
-        guard let phrase = QQHitClock.rest(message.text) else { return false }
-        if !phrase.isEmpty && phrase != "打一下" { return true }
-        if message.mentionedUsers.contains(where: { $0 != "all" && $0 != expectedSelfID && Self.validID($0) }) { return true }
-        return !message.group && (phrase.isEmpty || phrase == "打一下") && senderPersona(for: message) != nil
+    /// The checked sender of `/欺负` or `/欺负 打一下`. That person is hitting the bot.
+    public func bullySender(in message: QQIncoming) -> QQSenderPersona? {
+        guard QQHitClock.matches(message.text), let sender = senderPersona(for: message), sender.bullies else { return nil }
+        return sender
     }
     public func persona(for message: QQIncoming) -> QQPersona {
         guard let bound = senderPersona(for: message) else { return persona(for: message.key) }

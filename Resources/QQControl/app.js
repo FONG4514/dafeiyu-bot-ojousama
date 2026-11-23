@@ -284,7 +284,7 @@ function senderPersonaRow(item={}) {
   const attitude=document.createElement('input');attitude.className='sender-attitude';attitude.maxLength=120;attitude.autocomplete='off';attitude.placeholder='可选：关系卡片态度简述（提及该用户时注入，留空按上方性格自动生成）';attitude.setAttribute('aria-label','对该用户的态度简述');attitude.value=item.attitude??'';
   const bullyLabel=document.createElement('label');bullyLabel.className='sender-bully';
   const bully=document.createElement('input');bully.type='checkbox';bully.className='sender-bully-input';bully.checked=!!item.bully;
-  bullyLabel.append(bully,document.createTextNode('欺负他（才响应 /欺负）'));
+  bullyLabel.append(bully,document.createTextNode('允许他 /欺负'));
   row.append(number,style,remove,names,attitude,bullyLabel,name,prompt);
   return row;
 }
