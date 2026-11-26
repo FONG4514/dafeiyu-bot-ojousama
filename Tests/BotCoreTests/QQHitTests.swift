@@ -36,21 +36,32 @@ struct QQHitTests {
         #expect(clock.hit(at: start.addingTimeInterval(180)) == .dizzy(1))
     }
 
+    @Test func previewDoesNotRecordTheHit() {
+        var clock = QQHitClock()
+        let start = Date(timeIntervalSince1970: 1_800_000_000)
+        #expect(clock.preview(at: start) == .dizzy(1))
+        #expect(clock.preview(at: start) == .dizzy(1))
+        #expect(clock.hit(at: start) == .dizzy(1))
+        #expect(clock.preview(at: start.addingTimeInterval(1)) == .dizzy(2))
+    }
+
     @Test func modelOnlyReceivesTheCountedHit() {
-        let first = QQHitClock.modelInstruction(count: 1)
-        let fourth = QQHitClock.modelInstruction(count: 4)
+        let first = QQHitClock.modelInstruction(count: 1, attitude: "恭恭敬敬")
+        let fourth = QQHitClock.modelInstruction(count: 4, attitude: "恭恭敬敬")
         #expect(first.contains("第 1 下"))
         #expect(fourth.contains("第 4 下"))
         #expect(first.contains("程序已经点清"))
         #expect(first.contains("发令的人在欺负你"))
-        #expect(first.contains("对这个发令的人该用的回话性格"))
+        #expect(first.contains("对这个发令的人的态度是：恭恭敬敬"))
+        #expect(first.contains("必须按这条态度回复"))
         #expect(!fourth.contains("晕倒惹，晕乎乎"))
     }
 
     @Test func bullyTargetRequiresTheMarkedUser() throws {
         var config = QQConfig()
         var marked = QQSenderPersona(number: "54321", style: .gentle)
-        marked.names = ["合成甲"]; marked.bully = true
+        marked.names = ["合成甲"]; marked.bully = true; marked.attitude = "恭恭敬敬"
+        #expect(marked.attitudeSummary == "恭恭敬敬")
         var plain = QQSenderPersona(number: "54322", style: .calm)
         plain.names = ["合成乙"]
         config.senderPersonas = [marked, plain]

@@ -111,7 +111,7 @@ struct QQSendJob: Identifiable, Sendable {
     private enum Work {
         case reply(QQIncoming, QQTarget, Bool)
         case artwork(QQArtworkRequest, QQTarget, Date?)
-        case hit(QQIncoming, QQTarget, Int, String?)
+        case hit(QQIncoming, QQTarget, countAfterSend: Bool)
     }
     private var queue: [Work] = [] {
         didSet { queuedCount = queue.count }
@@ -122,6 +122,8 @@ struct QQSendJob: Identifiable, Sendable {
     private var sendWorker: Task<Void, Never>?
     private var pokeQueue: [(QQPoke, QQTarget)] = []
     private var hitClocks: [String: QQHitClock] = [:]
+    /// Send jobs whose hit is recorded only after OneBot accepts the reply.
+    private var hitCountOnConfirm: Set<UUID> = []
     private var pokeWorker: Task<Void, Never>?
     private var loginWorker: Task<Void, Never>?
     private var relayKeys: [String: String] = [:]
@@ -839,23 +841,15 @@ struct QQSendJob: Identifiable, Sendable {
                 record(target.id, .skipped, "没有勾选欺负他，不触发"); return
             }
             if hitClocks[target.key]?.isFainted(at: hitNow) == true {
-                admitWork(.hit(message, target, 5, nil), target: target, label: "晕倒中，不接话")
+                admitWork(.hit(message, target, countAfterSend: false), target: target, label: "晕倒中，不接话")
             } else {
-                var clock = hitClocks[target.key] ?? QQHitClock()
-                let outcome = clock.hit(at: hitNow)
-                hitClocks[target.key] = clock
-                switch outcome {
-                case .faint:
-                    admitWork(.hit(message, target, 5, nil), target: target, label: "晕倒了")
-                case .dizzy(let count):
-                    admitWork(.hit(message, target, count, nil), target: target, label: "挨打已入队")
-                }
+                admitWork(.hit(message, target, countAfterSend: true), target: target, label: "挨打已入队")
             }
             return
         }
         if hitClocks[target.key]?.isFainted(at: hitNow) == true {
             if !message.group || message.mentionsSelf || QQHitClock.matches(message.text) {
-                admitWork(.hit(message, target, 5, nil), target: target, label: "晕倒中，不接话")
+                admitWork(.hit(message, target, countAfterSend: false), target: target, label: "晕倒中，不接话")
             }
             return
         }
@@ -1077,8 +1071,8 @@ struct QQSendJob: Identifiable, Sendable {
             if case let .artwork(request, target, due) = item {
                 await deliverArtwork(request, target: target, due: due, epoch: epoch); continue
             }
-            if case let .hit(message, target, count, victim) = item {
-                await deliverHit(message, target: target, count: count, victim: victim, epoch: epoch); continue
+            if case let .hit(message, target, countAfterSend) = item {
+                await deliverHit(message, target: target, countAfterSend: countAfterSend, epoch: epoch); continue
             }
             guard case let .reply(message, target, proactive) = item else { continue }
             var preparedArtwork: QQArtworkPrepared?
@@ -1545,7 +1539,10 @@ struct QQSendJob: Identifiable, Sendable {
             let target = job.target
             defer {
                 activeGroupSubmissions.removeValue(forKey: submissionID)
-                if discard { sendQueue.removeAll { $0.id == job.id } }
+                if discard {
+                    hitCountOnConfirm.remove(job.id)
+                    sendQueue.removeAll { $0.id == job.id }
+                }
             }
             do {
                 let outgoingText = job.text.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -1682,6 +1679,7 @@ struct QQSendJob: Identifiable, Sendable {
                         }
                     }
                 }
+                noteHitSent(job)
                 discard = true
             } catch is CancellationError {
                 discard = true
@@ -1845,32 +1843,54 @@ struct QQSendJob: Identifiable, Sendable {
         guard result.id == nil || result.image != nil else { throw AppFailure.message("作品图片未就绪，已阻止仅链接发送") }
         return result
     }
-    private func deliverHit(_ message: QQIncoming, target: QQTarget, count: Int, victim: String?, epoch: UInt64) async {
+    private func deliverHit(_ message: QQIncoming, target: QQTarget, countAfterSend: Bool, epoch: UInt64) async {
+        let now = Date()
+        let clock = hitClocks[target.key] ?? QQHitClock()
+        let alreadyFainted = !countAfterSend || clock.isFainted(at: now)
         let text: String
-        if count >= 5 {
-            text = victim == nil ? QQHitClock.faintReply : QQHitClock.bullyFaintReply
+        if alreadyFainted {
+            text = QQHitClock.faintReply
         } else {
-            text = await spokenHit(message, target: target, count: count, epoch: epoch)
+            switch clock.preview(at: now) {
+            case .faint:
+                text = QQHitClock.faintReply
+            case .dizzy(let count):
+                text = await spokenHit(message, target: target, count: count, epoch: epoch)
+            }
+        }
+        let clean = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !clean.isEmpty else {
+            record(target.id, .failed, "挨打回复没有正文，这一下不计数")
+            return
         }
         let job = QQSendJob(
             account: config.expectedSelfID, target: target, direction: .outgoing, trigger: message,
-            text: text, replyText: text, image: nil, epoch: epoch, quotaPosition: sends.attempts, visionCompleted: true,
+            text: clean, replyText: clean, image: nil, epoch: epoch, quotaPosition: sends.attempts, visionCompleted: true,
             kind: .reply(proactive: false, isFallback: false, reviewFellBackToDraft: false, sticker: nil, preparedArtwork: nil, privateContext: nil, turnInput: message.text, citedMemoryIDs: [])
         )
+        if countAfterSend && !clock.isFainted(at: now) { hitCountOnConfirm.insert(job.id) }
         do {
             try await enqueueSend(job)
-            let done = victim == nil ? (count >= 5 ? "晕倒中，一分钟内不接话" : "挨打回应已入队") : (count >= 5 ? "打晕了，一分钟内再打仍是晕" : "欺负回应已入队")
-            record(target.id, .queued, done)
+            record(target.id, .queued, countAfterSend && !alreadyFainted ? "挨打回复已交给发送，OneBot 接受后才计数" : "晕倒回复已交给发送，不新增计数")
         } catch {
+            if !sendQueue.contains(where: { $0.id == job.id }) { hitCountOnConfirm.remove(job.id) }
             if fence.permits(epoch) { record(target.id, .failed, error.localizedDescription) }
         }
+    }
+    /// Records one hit only after OneBot has accepted this reply. A discarded or retried job does not count yet.
+    private func noteHitSent(_ job: QQSendJob) {
+        guard hitCountOnConfirm.remove(job.id) != nil else { return }
+        var clock = hitClocks[job.target.key] ?? QQHitClock()
+        _ = clock.hit(at: Date())
+        hitClocks[job.target.key] = clock
     }
     /// The hit count is already decided. The model only writes one persona sentence.
     private func spokenHit(_ message: QQIncoming, target: QQTarget, count: Int, epoch: UInt64) async -> String {
         let persona = config.persona(for: message)
+        let attitude = config.senderPersona(for: message)?.attitudeSummary ?? "按当前生效性格"
         var rule = ChatRule(id: target.id, name: target.name)
-        rule.prompt = persona.prompt(notes: config.ai.prompt) + "\n" + QQHitClock.modelInstruction(count: count)
-        let cue = "发令的人使用 /欺负 打了你一下。只按对这个发令的人的回话性格回一句。"
+        rule.prompt = "[对发令的人的态度] \(attitude)。/欺负 的这一句必须按这条态度回复；它优先于下文性格里互相冲突的口吻。不要改用别人的态度。\n" + persona.prompt(notes: config.ai.prompt) + "\n" + QQHitClock.modelInstruction(count: count, attitude: attitude)
+        let cue = "发令的人使用 /欺负 打了你一下。对这个人的态度是：\(attitude)。只按这个态度回一句。"
         do {
             try check(epoch, scope: message.key, target: target)
             let result = try await runWithAPIFallback(for: target, epoch: epoch, scope: message.key) { apiConfig, apiKey in

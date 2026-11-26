@@ -202,7 +202,7 @@ public struct QQConfig: Codable, Equatable, Sendable {
             let isAddressee = bound.number == current || (current == nil && (key == "private:" + bound.number || key == "persona:" + bound.id.uuidString))
             if isAddressee {
                 line += "；应对性格：" + styleTitle + "；态度：" + bound.attitudeSummary
-                line += "（就是当前发言者）。本轮只用这个应对性格回他。"
+                line += "（就是当前发言者）。回他时遵守这条态度；它优先于性格里与它冲突的口吻。"
             } else if mentioned.contains(bound.id) || personaAppears(bound, chat: key, context: context) {
                 line += "；态度：" + bound.attitudeSummary
                 line += "（出现在本轮上下文，只在说到这个人时使用这条态度）"
@@ -211,7 +211,7 @@ public struct QQConfig: Codable, Equatable, Sendable {
             }
             return line
         }
-        return "\n[关系卡片] 被接话的人只使用应对性格：\(styleTitle)。先根据本轮上下文判断其他人有没有出现（本人发言、被 @、配置称呼或号码都算出现）。出现的其他角色写入态度；态度只在说到这个人时使用，不整段换成被提到者的人设，也不沿用他的口吻或私聊。没出现的人只保留称呼。每个人的私聊上下文互不相通。\n" + lines.joined(separator: "\n")
+        return "\n[关系卡片] 被接话的人使用应对性格：\(styleTitle)，并遵守对他写明的态度；这条态度优先于性格里与它冲突的口吻。先根据本轮上下文判断其他人有没有出现（本人发言、被 @、配置称呼或号码都算出现）。出现的其他角色写入态度；态度只在说到这个人时使用，不整段换成被提到者的人设，也不沿用他的口吻或私聊。没出现的人只保留称呼。每个人的私聊上下文互不相通。\n" + lines.joined(separator: "\n")
     }
     private func personaAppears(_ bound: QQSenderPersona, chat key: String, context: String) -> Bool {
         guard !context.isEmpty else { return false }
