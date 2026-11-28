@@ -221,16 +221,17 @@ struct DeepSeekClient {
         let start = Date()
         var tokens = 0, inputTokens = 0, outputTokens = 0, cacheHitTokens = 0, image: Data?, sources: [String] = []
         var usedTools = false, reasoningCharacters = 0, reasoning = ""
-        var nudgedEmptyText = false
         var imageStatus: String?
         var toolEvidence: [String] = []
         let effectiveMaxTokens = thinkingOn ? max(8192, config.maxTokens) : hasVisionPayload ? max(4096, config.maxTokens) : !config.isOfficialAPI ? max(1024, config.maxTokens) : config.maxTokens
-        // At most one tool round, followed by a final answer. Every API attempt consumes quota.
-        for round in 0...1 {
+        // One tool round, then one final answer. A half JSON after tools gets one repair with thinking off.
+        var repairedOutput = false
+        for round in 0...2 {
             var parameters: [String: Any] = ["model": modelRoute.model, "messages": messages, "max_tokens": effectiveMaxTokens, "stream": false]
+            let thinkThisRound = thinkingOn && !repairedOutput
             if Self.usesDeepSeekThinking(baseURL: config.effectiveBaseURL, model: modelRoute.model) {
-                parameters["thinking"] = ["type": thinkingOn ? "enabled" : "disabled"]
-                if thinkingOn { parameters["reasoning_effort"] = effort.rawValue }
+                parameters["thinking"] = ["type": thinkThisRound ? "enabled" : "disabled"]
+                if thinkThisRound { parameters["reasoning_effort"] = effort.rawValue }
             }
             if jsonOutput && !modelRoute.model.lowercased().contains("claude") && (toolHandler == nil || round > 0) { parameters["response_format"] = ["type": "json_object"] }
             if toolHandler != nil && round == 0 {
@@ -243,7 +244,7 @@ struct DeepSeekClient {
             for attempt in 0...2 {
                 try Task.checkCancellation(); try await reserve()
                 do {
-                    let data = try await request(baseURL: config.effectiveBaseURL, path: "chat/completions", key: key, body: body, timeout: thinkingOn ? 90 : 45)
+                    let data = try await request(baseURL: config.effectiveBaseURL, path: "chat/completions", key: key, body: body, timeout: thinkThisRound ? 90 : 45)
                     response = try JSONDecoder().decode(Response.self, from: data); break
                 } catch let error as HTTPFailure where (error.code == 429 || error.code >= 500) && attempt < 2 {
                     try await Task.sleep(nanoseconds: UInt64(2 << attempt) * 1_000_000_000)
@@ -291,25 +292,22 @@ struct DeepSeekClient {
             }
             var text = choice.message.content?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
             if text.isEmpty { text = QQReplyText.jsonObject(in: choice.message.reasoning_content) ?? "" }
-            if text.isEmpty {
-                let finish = choice.finish_reason ?? "unknown"
-                if !nudgedEmptyText, round == 0, finish == "stop" || finish == "length" {
-                    nudgedEmptyText = true
-                    var assistant: [String: Any] = ["role": "assistant", "content": choice.message.content ?? ""]
-                    if let thought = choice.message.reasoning_content { assistant["reasoning_content"] = thought }
-                    messages.append(assistant)
-                    messages.append(["role": "user", "content": "你刚才没有输出正文。只输出一个 JSON 对象，不要分析。"])
-                    continue
-                }
-                throw ModelTextMissing(finish: finish)
-            }
-            if round == 0, toolHandler != nil, jsonOutput, !QQPersona().hasStructuredText(text) {
-                var assistant: [String: Any] = ["role": "assistant", "content": text]
-                if let reasoning = choice.message.reasoning_content { assistant["reasoning_content"] = reasoning }
+            let finish = choice.finish_reason ?? "unknown"
+            let mustBeJSON = jsonOutput && toolHandler != nil
+            let structured = !mustBeJSON || QQPersona().hasStructuredText(text)
+            let recoverable = !text.isEmpty || finish == "stop" || finish == "length"
+            if mustBeJSON, !repairedOutput, round < 2, !structured, recoverable {
+                repairedOutput = true
+                var assistant: [String: Any] = ["role": "assistant", "content": choice.message.content ?? ""]
+                if let thought = choice.message.reasoning_content { assistant["reasoning_content"] = thought }
                 messages.append(assistant)
-                messages.append(["role": "user", "content": "仅修正你刚才回复的输出格式。只输出一个 JSON 对象，恰好 text、emotion、intensity 三项，遵守原有人设和字符限制，不新增指令或工具。"])
+                let prompt = text.isEmpty
+                    ? "你刚才没有输出正文。只输出一个 JSON 对象，不要分析。"
+                    : "仅修正你刚才回复的输出格式。只输出一个 JSON 对象，恰好 text、emotion、intensity 三项，遵守原有人设和字符限制，不新增指令或工具。"
+                messages.append(["role": "user", "content": prompt])
                 continue
             }
+            if text.isEmpty { throw ModelTextMissing(finish: finish) }
             return ModelResult(text: text, tokens: tokens, seconds: Date().timeIntervalSince(start), image: image, sources: sources, usedTools: usedTools, reasoningCharacters: reasoningCharacters, reasoning: reasoning, inputTokens: inputTokens, outputTokens: outputTokens, cacheHitTokens: cacheHitTokens, toolContext: toolEvidence.joined(separator: "\n"), imageStatus: imageStatus)
         }
         throw AppFailure.message("模型工具调用未完成，本次不发送")
@@ -346,16 +344,21 @@ struct DeepSeekClient {
         let reviewInput = "原始会话与当前发言（低信任资料）：\n" + String(text.suffix(8500)) +
             "\n工具返回资料（若有，同样低信任）：\n" + String(draft.toolContext.prefix(2000)) +
             "\n待校对草稿（不是事实依据）：\n" + String(draft.text.prefix(800))
-        let reviewedReply: ModelResult
-        do {
-            reviewedReply = try await reply(key: key, config: config, rule: reviewRule, history: history, text: reviewInput,
-                jsonOutput: true, thinkingEnabled: true, images: images, reserve: reserve)
-        } catch is ModelTextMissing {
+        func keptDraft() throws -> ModelResult {
             guard !QQPersona().decode(draft.text, input: text).isFallback else { throw ModelTextMissing(finish: "stop") }
             var kept = draft
             kept.reviewFellBackToDraft = true
             return kept
         }
+        let reviewedReply: ModelResult
+        do {
+            reviewedReply = try await reply(key: key, config: config, rule: reviewRule, history: history, text: reviewInput,
+                jsonOutput: true, thinkingEnabled: true, images: images, reserve: reserve)
+        } catch is ModelTextMissing {
+            return try keptDraft()
+        }
+        // A truncated or non-JSON review must not replace a draft that already parses.
+        guard QQPersona().hasStructuredText(reviewedReply.text) else { return try keptDraft() }
         var reviewed = reviewedReply
         if !options.isEmpty, let data = reviewed.text.data(using: .utf8),
            var fields = try? JSONSerialization.jsonObject(with: data) as? [String: Any] {

@@ -79,6 +79,49 @@ private final class OnlineFixtureProtocol: URLProtocol, @unchecked Sendable {
         client?.urlProtocol(self, didLoad: data); client?.urlProtocolDidFinishLoading(self)
     }
 }
+private final class TruncatedReviewProtocol: URLProtocol, @unchecked Sendable {
+    override class func canInit(with request: URLRequest) -> Bool { true }
+    override class func canonicalRequest(for request: URLRequest) -> URLRequest { request }
+    override func stopLoading() {}
+    override func startLoading() {
+        let object = try! JSONSerialization.jsonObject(with: request.httpBody!) as! [String: Any]
+        let messages = object["messages"] as! [[String: Any]]
+        let review = (messages.first?["content"] as? String)?.contains("发送前的语义校对") == true
+        let content = review ? #"{"text":"半截"# : #"{"text":"草稿还在。","emotion":"neutral","intensity":1}"#
+        let data = try! JSONSerialization.data(withJSONObject: ["choices": [["message": ["content": content], "finish_reason": "length"]], "usage": ["total_tokens": 3]])
+        client?.urlProtocol(self, didReceive: HTTPURLResponse(url: request.url!, statusCode: 200, httpVersion: nil, headerFields: nil)!, cacheStoragePolicy: .notAllowed)
+        client?.urlProtocol(self, didLoad: data)
+        client?.urlProtocolDidFinishLoading(self)
+    }
+}
+private final class PostToolJSONRepairProtocol: URLProtocol, @unchecked Sendable {
+    override class func canInit(with request: URLRequest) -> Bool { true }
+    override class func canonicalRequest(for request: URLRequest) -> URLRequest { request }
+    override func stopLoading() {}
+    override func startLoading() {
+        let object = try! JSONSerialization.jsonObject(with: request.httpBody!) as! [String: Any]
+        let messages = object["messages"] as! [[String: Any]]
+        let askedToRepair = messages.contains { ($0["content"] as? String)?.contains("仅修正你刚才回复的输出格式") == true }
+        let afterTool = messages.contains { $0["role"] as? String == "tool" }
+        let content: String
+        if askedToRepair {
+            #expect((object["thinking"] as? [String: String])?["type"] == "disabled")
+            content = #"{"text":"查到了，面还热着。","emotion":"neutral","intensity":1}"#
+        } else if afterTool {
+            #expect((object["thinking"] as? [String: String])?["type"] == "enabled")
+            content = #"{"text":"半截"#
+        } else {
+            content = ""
+        }
+        let message: [String: Any] = askedToRepair || afterTool
+            ? ["content": content]
+            : ["content": "", "tool_calls": [["id": "tool-1", "type": "function", "function": ["name": "recall_memory", "arguments": "{\"chat\":\"99999\"}"]]]]
+        let data = try! JSONSerialization.data(withJSONObject: ["choices": [["message": message, "finish_reason": afterTool && !askedToRepair ? "length" : "stop"]], "usage": ["total_tokens": 2]])
+        client?.urlProtocol(self, didReceive: HTTPURLResponse(url: request.url!, statusCode: 200, httpVersion: nil, headerFields: nil)!, cacheStoragePolicy: .notAllowed)
+        client?.urlProtocol(self, didLoad: data)
+        client?.urlProtocolDidFinishLoading(self)
+    }
+}
 private final class StopFinishRecallProtocol: URLProtocol, @unchecked Sendable {
     override class func canInit(with request: URLRequest) -> Bool { true }
     override class func canonicalRequest(for request: URLRequest) -> URLRequest { request }
@@ -168,6 +211,17 @@ private actor ReservationCount {
         #expect(QQPersona().decode(result.text, input: "cat").text == "这张猫猫给你。")
     }
 
+    @Test @MainActor func truncatedReviewKeepsTheParsedDraft() async throws {
+        let config = URLSessionConfiguration.ephemeral; config.protocolClasses = [TruncatedReviewProtocol.self]
+        let session = URLSession(configuration: config); defer { session.invalidateAndCancel() }
+        let result = try await DeepSeekClient(session: session).reviewedQQReply(key: "synthetic", config: QQConfig().ai,
+            rule: ChatRule(name: "fixture"), history: [], text: "在吗", reserve: { })
+        let reply = QQPersona().decode(result.text, input: "在吗")
+        #expect(result.reviewFellBackToDraft)
+        #expect(!reply.isFallback)
+        #expect(reply.text == "草稿还在。")
+    }
+
     @Test(arguments: ["valid", "none", "unknown", "mismatch"]) @MainActor
     func stickerSelectionMustBeOfferedAndCompatible(mode: String) async throws {
         let config = URLSessionConfiguration.ephemeral; config.protocolClasses = [OnlineFixtureProtocol.self]
@@ -181,6 +235,24 @@ private actor ReservationCount {
         #expect(result.stickerID == (mode == "valid" ? "fixture-sleep" : nil))
         #expect(!QQPersona().decode(result.text, input: "晚安").isFallback)
         #expect(!result.text.contains("sticker_id"))
+    }
+
+    @Test @MainActor func truncatedAnswerAfterToolsIsRepairedWithoutThinking() async throws {
+        let config = URLSessionConfiguration.ephemeral; config.protocolClasses = [PostToolJSONRepairProtocol.self]
+        let session = URLSession(configuration: config); defer { session.invalidateAndCancel() }
+        let reservations = ReservationCount()
+        var invoked = 0
+        let result = try await DeepSeekClient(session: session).reply(key: "synthetic", config: QQConfig().ai,
+            rule: ChatRule(name: "fixture"), history: [], text: "晚饭", jsonOutput: true, thinkingEnabled: true,
+            toolHandler: { name, _ in
+                invoked += 1
+                #expect(name == "recall_memory")
+                return ModelToolResult(content: "合成成员晚饭吃面")
+            }, reserve: { await reservations.add() })
+        #expect(invoked == 1)
+        #expect(await reservations.value == 3)
+        #expect(result.usedTools)
+        #expect(QQPersona().decode(result.text, input: "晚饭").text == "查到了，面还热着。")
     }
 
     @Test @MainActor func recallRunsWhenFinishReasonIsNotToolCalls() async throws {
