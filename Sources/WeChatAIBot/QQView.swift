@@ -424,7 +424,9 @@ struct QQView: View {
                             }, set: { preset in
                                 editor.replyDraft.value.ai.effectiveBaseURL = preset.defaultBaseURL
                                 let stale = ["deepseek-flash", "deepseek-v4.1-flash", "kimi-latest", "glm-4-flash"]
-                                if !preset.defaultModel.isEmpty, editor.replyDraft.value.ai.model.isEmpty || stale.contains(editor.replyDraft.value.ai.model) {
+                                if preset == .deepseek {
+                                    editor.replyDraft.value.ai.model = preset.defaultModel
+                                } else if !preset.defaultModel.isEmpty, editor.replyDraft.value.ai.model.isEmpty || stale.contains(editor.replyDraft.value.ai.model) {
                                     editor.replyDraft.value.ai.model = preset.defaultModel
                                 } else if preset == .ciallo, stale.contains(editor.replyDraft.value.ai.model) {
                                     editor.replyDraft.value.ai.model = ""
@@ -432,13 +434,17 @@ struct QQView: View {
                             })) {
                                 ForEach(QQAPIPreset.allCases.filter { $0 != .custom }, id: \.self) { preset in Text(preset.title).tag(preset) }
                             }
-                            Picker("模型", selection: $editor.replyDraft.value.ai.model) {
-                                ForEach(modelChoices(current: editor.replyDraft.value.ai.model, fetched: engine.availableModels), id: \.self) { model in Text(model).tag(model) }
-                            }
-                            Button("获取模型") {
-                                let baseURL = editor.replyDraft.value.ai.effectiveBaseURL
-                                let key = editor.relayKey
-                                Task { do { _ = try await engine.refreshModels(baseURL: baseURL, key: key) } catch { engine.error = error.localizedDescription } }
+                            if QQAPIPreset.detect(editor.replyDraft.value.ai.effectiveBaseURL) == .deepseek {
+                                Text("默认模型 deepseek-flash")
+                            } else {
+                                Picker("模型", selection: $editor.replyDraft.value.ai.model) {
+                                    ForEach(modelChoices(current: editor.replyDraft.value.ai.model, fetched: engine.availableModels), id: \.self) { model in Text(model).tag(model) }
+                                }
+                                Button("获取模型") {
+                                    let baseURL = editor.replyDraft.value.ai.effectiveBaseURL
+                                    let key = editor.relayKey
+                                    Task { do { _ = try await engine.refreshModels(baseURL: baseURL, key: key) } catch { engine.error = error.localizedDescription } }
+                                }
                             }
                             Button("复制微信 AI 参数") {
                                 var ai = wechat.config; ai.chats = []

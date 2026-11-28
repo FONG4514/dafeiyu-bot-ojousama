@@ -56,6 +56,9 @@ struct QQReplyForm: Equatable {
         updated.dailyLimit = try panelInteger(dailyLimit, label: "每日模型调用上限", range: 1...10000)
         updated.effectiveSendLimits.daily = try panelInteger(sendDaily, label: "每日发送上限", range: 1...10000)
         updated.effectiveSendLimits.perChatDaily = try panelInteger(perChatDaily, label: "单会话每日发送上限", range: 1...10000)
+        if QQAPIPreset.detect(updated.effectiveBaseURL) == .deepseek {
+            updated.model = QQAPIPreset.deepseek.defaultModel
+        }
         try updated.validate()
         return updated
     }
